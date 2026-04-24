@@ -1,0 +1,7 @@
+{
+  "MENS": {"gender": "Men", "possessive": "Men's", "prefix": "M"},
+  "LADIES": {"gender": "Women", "possessive": "Women's", "prefix": "W"},
+  "BOYS": {"gender": "Boys", "possessive": "Boys'", "prefix": "B"},
+  "GIRLS": {"gender": "Girls", "possessive": "Girls'", "prefix": "G"},
+  "UNISEX": {"gender": "Unisex", "possessive": "Unisex", "prefix": "U"}
+}

@@ -4,6 +4,7 @@ Converts Logic ERP Item Master export → Fynd Platform upload template.
 """
 
 import streamlit as st
+
 from transformer import transform
 
 st.set_page_config(
@@ -13,8 +14,14 @@ st.set_page_config(
 )
 
 st.title("Cottonworld → Fynd Platform Converter")
-st.markdown("Upload the **Logic ERP Item Master** `.xlsx` file to generate a Fynd Commerce-ready upload file.")
-st.markdown("**Supported categories:** T-Shirts, Shirts (Top Wear)")
+st.markdown(
+    "Upload the **Logic ERP Item Master** `.xlsx` file to generate a "
+    "Fynd Commerce-ready upload file."
+)
+st.caption(
+    "All sections (Mens, Ladies, Boys, Unisex) and departments are supported. "
+    "HS Code is resolved from the Section + Department HSN lookup."
+)
 
 st.divider()
 
@@ -30,11 +37,13 @@ if uploaded_file is not None:
     if st.button("Convert to Fynd Template", type="primary"):
         with st.spinner("Transforming data..."):
             try:
-                output_buf = transform(uploaded_file)
+                output_buf, warnings = transform(uploaded_file)
 
                 st.success("Conversion complete!")
 
-                output_filename = uploaded_file.name.replace(".xlsx", "") + "_fynd_upload.xlsx"
+                output_filename = (
+                    uploaded_file.name.replace(".xlsx", "") + "_fynd_upload.xlsx"
+                )
 
                 st.download_button(
                     label="Download Fynd Upload File",
@@ -44,6 +53,16 @@ if uploaded_file is not None:
                     type="primary",
                 )
 
+                if warnings:
+                    st.divider()
+                    st.warning(
+                        f"**{len(warnings)} warning(s) during conversion** — "
+                        "the file was generated, but review these before uploading to Fynd:"
+                    )
+                    with st.expander("View warnings", expanded=True):
+                        for w in warnings:
+                            st.markdown(f"- {w}")
+
             except ValueError as e:
                 st.error(f"Error: {e}")
             except Exception as e:
@@ -51,4 +70,4 @@ if uploaded_file is not None:
                 st.exception(e)
 
 st.divider()
-st.caption("Cottonworld Automation Tool v1.0 | Top Wear (T-Shirt & Shirt)")
+st.caption("Cottonworld Automation Tool v2.0 | All sections & departments")
