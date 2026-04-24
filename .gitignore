@@ -9,3 +9,7 @@ venv/
 *.egg-info/
 .ipynb_checkpoints/
 test_output*.xlsx
+fynd-extension/node_modules/
+fynd-extension/package-lock.json
+fynd-extension/*.db
+fynd-extension/.env

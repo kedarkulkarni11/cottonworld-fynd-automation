@@ -71,12 +71,80 @@ cottonworld-automation/
 ├── requirements.txt
 ├── README.md
 ├── .streamlit/config.toml
-└── data/
-    ├── hsn_lookup.csv
-    ├── sleeve_map.json
-    ├── collar_map.json
-    ├── material_map.json
-    ├── section_gender.json
-    ├── department_display.json
-    └── static_values.json
+├── data/
+│   ├── hsn_lookup.csv
+│   ├── sleeve_map.json
+│   ├── collar_map.json
+│   ├── material_map.json
+│   ├── section_gender.json
+│   ├── department_display.json
+│   └── static_values.json
+└── fynd-extension/                 # Node.js OAuth shim for Fynd Private Extension
+    ├── server.js
+    ├── index.js
+    ├── public/index.html
+    ├── package.json
+    ├── Dockerfile
+    └── README.md
 ```
+
+## Deploy as Fynd Private Extension
+
+Architecture: **two** Render services, both defined in this repo's
+`render.yaml`.
+
+1. **`cottonworld-fynd-automation`** — the Streamlit tool (already live).
+2. **`cottonworld-fynd-extension`** — a small Node.js shim (in
+   [`fynd-extension/`](./fynd-extension)) that handles Fynd's OAuth
+   (`/fp/install`, `/fp/auth`) and iframes the Streamlit app after
+   successful install.
+
+### Step 1 — Create the extension in Fynd Partner panel
+1. Go to `console.fynd.com` → **Partners** → **Extensions** → **Create Extension** → **Create Here**.
+2. Fill in Basic Details (name, icon, description).
+3. Set **Extension URL** to a placeholder for now (e.g.
+   `https://cottonworld-fynd-extension.onrender.com`). You'll confirm this
+   after the service is deployed.
+4. Select the **Permissions** the tool actually needs. This tool does not
+   call any Platform API, so *Products* alone is typically sufficient (or
+   even none).
+5. Save. Open the extension again → copy the **API Key** and **API Secret**.
+
+### Step 2 — Deploy the extension shim to Render
+1. In Render, the existing Blueprint picks up the new service automatically.
+   (Render → Blueprint → Sync — it sees `cottonworld-fynd-extension` in
+   `render.yaml`.)
+2. Render provisions the Docker service but it will fail to start until
+   credentials are set. Open the service → **Environment** and add:
+   - `EXTENSION_API_KEY` — from Fynd Partner panel
+   - `EXTENSION_API_SECRET` — from Fynd Partner panel
+   - `EXTENSION_BASE_URL` — the Render URL of *this* service, e.g.
+     `https://cottonworld-fynd-extension.onrender.com`
+3. Trigger a redeploy (Render → Manual Deploy → Deploy latest commit).
+
+### Step 3 — Wire up Fynd Partner panel
+1. Go back to the extension in Fynd Partner panel.
+2. Update **Extension URL** to the final Render URL of the extension shim
+   (must exactly match `EXTENSION_BASE_URL`).
+3. Save.
+
+### Step 4 — Install on Cottonworld's company
+1. In Fynd, go to the extension's **Preview** / **Install** page.
+2. Choose Cottonworld's company and click **Install**.
+3. Fynd redirects to `https://cottonworld-fynd-extension.onrender.com/fp/install`,
+   which kicks off OAuth.
+4. Approve permissions.
+5. On success, Fynd returns you to the extension → you see the Streamlit
+   converter loaded in an iframe.
+
+### Troubleshooting
+- **"Invalid api_key or api_secret"** — double-check the env vars in
+  Render. They must match exactly what Fynd shows under Credentials.
+- **Iframe doesn't render** — verify `EXTENSION_BASE_URL` in Render matches
+  the Extension URL saved in Fynd exactly (including `https://` and no
+  trailing slash).
+- **Streamlit app blocked in iframe** — check the browser console for
+  `X-Frame-Options` or CSP errors. The extension shim sets a permissive
+  `frame-ancestors` header for `*.fynd.com` already; if you see the
+  Streamlit app itself refusing to render, the Streamlit Dockerfile may
+  need `--server.enableCORS=false` added.

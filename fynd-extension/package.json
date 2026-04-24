@@ -1,0 +1,25 @@
+{
+  "name": "cottonworld-fynd-extension",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fynd Commerce private extension that embeds the Cottonworld Logic→Fynd converter Streamlit app.",
+  "main": "index.js",
+  "scripts": {
+    "start": "NODE_ENV=production node index.js",
+    "start:dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "@gofynd/fdk-extension-javascript": "^1.1.4",
+    "body-parser": "^1.20.2",
+    "cookie-parser": "^1.4.6",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

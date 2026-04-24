@@ -1,4 +1,5 @@
 services:
+  # Streamlit converter — actual tool UI
   - type: web
     name: cottonworld-fynd-automation
     runtime: docker
@@ -7,3 +8,25 @@ services:
     envVars:
       - key: STREAMLIT_SERVER_HEADLESS
         value: "true"
+
+  # Fynd private-extension shim — handles OAuth, iframes the Streamlit app
+  - type: web
+    name: cottonworld-fynd-extension
+    runtime: docker
+    plan: free
+    rootDir: ./fynd-extension
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      # Required — set these in the Render dashboard after first deploy
+      - key: EXTENSION_API_KEY
+        sync: false
+      - key: EXTENSION_API_SECRET
+        sync: false
+      - key: EXTENSION_BASE_URL
+        sync: false
+      # Defaults (can be overridden in dashboard)
+      - key: FP_API_DOMAIN
+        value: https://api.fynd.com
+      - key: STREAMLIT_URL
+        value: https://cottonworld-fynd-automation.onrender.com/
