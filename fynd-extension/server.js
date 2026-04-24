@@ -19,8 +19,8 @@ const { SQLiteStorage } = require('@gofynd/fdk-extension-javascript/express/stor
 
 const sqliteInstance = new sqlite3.Database(process.env.SQLITE_PATH || '/tmp/session_storage.db');
 
-const STREAMLIT_URL =
-  process.env.STREAMLIT_URL || 'https://cottonworld-fynd-automation.onrender.com/';
+const CW_TRANSFORMER_URL =
+  process.env.CW_TRANSFORMER_URL || 'https://cottonworld-fynd-automation.onrender.com';
 
 const fdkExtension = setupFdk({
   api_key: process.env.EXTENSION_API_KEY,
@@ -59,15 +59,18 @@ app.use('/', fdkExtension.fdkHandler);
 // Simple health check (Render uses this)
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
 
-// Landing page — iframes the Streamlit converter.
+// Landing page — self-contained upload UI that calls the transformer API.
 app.get('/', (_req, res) => {
   const html = readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf-8')
-    .replace('__STREAMLIT_URL__', STREAMLIT_URL);
+    .replace('__CW_TRANSFORMER_URL__', CW_TRANSFORMER_URL);
   res
     .status(200)
     .set('Content-Type', 'text/html; charset=utf-8')
     // Allow being embedded by Fynd Commerce Platform
-    .set('Content-Security-Policy', "frame-ancestors 'self' https://*.fynd.com https://*.fyndx0.com https://*.fyndx1.com https://*.fyndx5.com;")
+    .set('Content-Security-Policy', [
+      "frame-ancestors 'self' https://*.fynd.com https://*.fyndx0.com https://*.fyndx1.com https://*.fyndx5.com;",
+      `connect-src 'self' ${CW_TRANSFORMER_URL};`,
+    ].join(' '))
     .send(html);
 });
 

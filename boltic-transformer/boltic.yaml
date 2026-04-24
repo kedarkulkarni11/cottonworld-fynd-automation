@@ -1,0 +1,14 @@
+Timeout: 60
+MemoryMB: 512
+CPU: 0.5
+Min: 0
+Max: 5
+AutoStop: true
+MaxIdleTime: 300
+PortMap:
+  - Name: http
+    Port: 8000
+    Protocol: http
+Env:
+  - Key: PORT
+    Value: "8000"

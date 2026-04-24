@@ -1,50 +1,291 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Cottonworld → Fynd Converter</title>
-    <style>
-      html, body {
-        margin: 0;
-        padding: 0;
-        width: 100%;
-        height: 100%;
-        background: #fff;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        overflow: hidden;
-      }
-      #app {
-        width: 100vw;
-        height: 100vh;
-        border: 0;
-      }
-      #fallback {
-        display: none;
-        padding: 24px;
-        color: #222;
-      }
-      #fallback a {
-        color: #1f77b4;
-        font-weight: 600;
-      }
-    </style>
-  </head>
-  <body>
-    <iframe
-      id="app"
-      src="__STREAMLIT_URL__"
-      title="Cottonworld to Fynd Converter"
-      allow="clipboard-read; clipboard-write; fullscreen"
-      referrerpolicy="no-referrer-when-downgrade"
-      onerror="document.getElementById('fallback').style.display='block'"
-    ></iframe>
-    <div id="fallback">
-      <h2>Tool didn't load</h2>
-      <p>
-        Open the converter directly:
-        <a href="__STREAMLIT_URL__" target="_blank" rel="noopener">open in new tab</a>.
-      </p>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cottonworld – Logic to Fynd Catalog Transformer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f7fa;
+      color: #1a1a2e;
+      min-height: 100vh;
+      padding: 24px 16px;
+    }
+
+    .container { max-width: 900px; margin: 0 auto; }
+
+    h1 { font-size: 20px; font-weight: 700; color: #1a1a2e; margin-bottom: 4px; }
+    .subtitle { font-size: 13px; color: #6b7280; margin-bottom: 20px; line-height: 1.5; }
+
+    .disclaimer {
+      background: #fffbeb;
+      border: 1px solid #f59e0b;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 13px;
+      color: #92400e;
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+    .disclaimer strong { font-weight: 600; }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 2px dashed #d1d5db;
+      border-radius: 10px;
+      background: #fff;
+      padding: 36px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      margin-bottom: 16px;
+    }
+    .drop-zone:hover, .drop-zone.drag-over { border-color: #2563eb; background: #eff6ff; }
+    .drop-zone.has-file { border-color: #10b981; background: #ecfdf5; }
+    .drop-icon { font-size: 36px; margin-bottom: 8px; }
+    .drop-label { font-size: 15px; font-weight: 500; color: #374151; }
+    .drop-sub { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+    .drop-filename { font-size: 13px; color: #10b981; font-weight: 600; margin-top: 8px; }
+    input[type="file"] { display: none; }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.15s;
+    }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #1d4ed8; }
+    .btn-success { background: #10b981; color: #fff; }
+    .btn-success:hover { background: #059669; }
+    .action-row { display: flex; gap: 10px; margin-bottom: 20px; }
+
+    /* Status */
+    .status { display: none; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; }
+    .status.loading { display: flex; background: #eff6ff; color: #1d4ed8; }
+    .status.error   { display: flex; background: #fef2f2; color: #991b1b; }
+    .spinner { width: 18px; height: 18px; border: 3px solid #bfdbfe; border-top-color: #2563eb; border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Warnings */
+    .warnings { display: none; background: #fff7ed; border: 1px solid #fb923c; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px; color: #7c2d12; }
+    .warnings.visible { display: block; }
+    .warnings h3 { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+    .warnings ul { padding-left: 18px; }
+    .warnings li { margin-bottom: 3px; line-height: 1.4; }
+
+    /* Result bar */
+    .result-bar { display: none; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; background: #ecfdf5; border: 1px solid #10b981; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; }
+    .result-bar.visible { display: flex; }
+    .result-info { font-size: 13px; color: #065f46; font-weight: 500; }
+
+    /* Preview */
+    .preview-section { display: none; margin-bottom: 24px; }
+    .preview-section.visible { display: block; }
+    .preview-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .preview-header h3 { font-size: 14px; font-weight: 700; color: #374151; }
+    .preview-header span { font-size: 12px; color: #6b7280; }
+    .table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid #e5e7eb; background: #fff; max-height: 420px; overflow-y: auto; }
+    table { border-collapse: collapse; min-width: 100%; font-size: 12px; }
+    th { background: #f9fafb; padding: 8px 12px; text-align: left; font-weight: 600; color: #374151; white-space: nowrap; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; z-index: 1; }
+    td { padding: 7px 12px; border-bottom: 1px solid #f3f4f6; white-space: nowrap; max-width: 200px; overflow: hidden; text-overflow: ellipsis; color: #4b5563; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #f9fafb; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>Cottonworld – Logic to Fynd Catalog Transformer</h1>
+  <p class="subtitle">
+    Upload the Logic ERP Item Master export and download a Fynd Commerce Platform-ready bulk upload file.<br>
+    All sections (Mens, Ladies, Boys, Unisex) and departments are supported. HS Code is resolved from the Section + Department lookup.
+  </p>
+
+  <div class="disclaimer">
+    ⚠️ <strong>Always review the generated file before uploading to Fynd Commerce Platform.</strong>
+    This tool automates the mapping but does not guarantee correctness for every row — open the output in Excel, spot-check names, HS codes, prices, and any flagged warnings before bulk upload.
+  </div>
+
+  <div class="drop-zone" id="dropZone">
+    <div class="drop-icon">📂</div>
+    <div class="drop-label">Drag &amp; drop Logic ERP Item Master (.xlsx)</div>
+    <div class="drop-sub">or click to browse · max 50 MB</div>
+    <div class="drop-filename" id="dropFilename"></div>
+  </div>
+  <input type="file" id="fileInput" accept=".xlsx" />
+
+  <div class="action-row">
+    <button class="btn btn-primary" id="convertBtn" disabled>⚙️ Convert to Fynd format</button>
+  </div>
+
+  <div class="status" id="status">
+    <div class="spinner"></div>
+    <span id="statusText">Transforming file… this may take a few seconds.</span>
+  </div>
+
+  <div class="warnings" id="warnings">
+    <h3>⚠️ Warnings — review these rows before uploading</h3>
+    <ul id="warningList"></ul>
+  </div>
+
+  <div class="result-bar" id="resultBar">
+    <span class="result-info" id="resultInfo"></span>
+    <button class="btn btn-success" id="downloadBtn">⬇ Download Fynd output (.xlsx)</button>
+  </div>
+
+  <div class="preview-section" id="previewSection">
+    <div class="preview-header">
+      <h3>Preview (first 20 rows)</h3>
+      <span id="previewNote"></span>
     </div>
-  </body>
+    <div class="table-wrap">
+      <table id="previewTable"></table>
+    </div>
+  </div>
+</div>
+
+<script>
+  const TRANSFORMER_URL = '__CW_TRANSFORMER_URL__';
+
+  const dropZone   = document.getElementById('dropZone');
+  const fileInput  = document.getElementById('fileInput');
+  const dropFilename = document.getElementById('dropFilename');
+  const convertBtn = document.getElementById('convertBtn');
+  const statusEl   = document.getElementById('status');
+  const statusText = document.getElementById('statusText');
+  const warningsEl = document.getElementById('warnings');
+  const warningList = document.getElementById('warningList');
+  const resultBar  = document.getElementById('resultBar');
+  const resultInfo = document.getElementById('resultInfo');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const previewSec = document.getElementById('previewSection');
+  const previewNote = document.getElementById('previewNote');
+
+  let selectedFile = null;
+  let outputBlob   = null;
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    handleFile(e.dataTransfer.files[0]);
+  });
+
+  function handleFile(file) {
+    if (!file || !file.name.endsWith('.xlsx')) { alert('Please select a .xlsx file.'); return; }
+    selectedFile = file;
+    dropFilename.textContent = '📄 ' + file.name;
+    dropZone.classList.add('has-file');
+    convertBtn.disabled = false;
+    resetResults();
+  }
+
+  function resetResults() {
+    outputBlob = null;
+    statusEl.className = 'status';
+    warningsEl.className = 'warnings';
+    warningList.innerHTML = '';
+    resultBar.className = 'result-bar';
+    previewSec.className = 'preview-section';
+    document.getElementById('previewTable').innerHTML = '';
+  }
+
+  convertBtn.addEventListener('click', async () => {
+    if (!selectedFile) return;
+    resetResults();
+    convertBtn.disabled = true;
+    statusEl.className = 'status loading';
+    statusText.textContent = 'Transforming file… this may take a few seconds.';
+
+    const form = new FormData();
+    form.append('file', selectedFile);
+
+    try {
+      const res = await fetch(`${TRANSFORMER_URL}/transform`, { method: 'POST', body: form });
+      const warningsHeader = res.headers.get('X-Warnings') || '';
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+
+      outputBlob = await res.blob();
+      statusEl.className = 'status';
+
+      const warningItems = warningsHeader.split('||').map(w => w.trim()).filter(Boolean);
+      if (warningItems.length) {
+        warningList.innerHTML = warningItems.map(w => `<li>${esc(w)}</li>`).join('');
+        warningsEl.className = 'warnings visible';
+      }
+
+      // Preview via SheetJS
+      const ab = await outputBlob.arrayBuffer();
+      const wb = XLSX.read(ab, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      const totalRows = rows.length - 1;
+
+      resultInfo.textContent = `✅ Done — ${totalRows} row${totalRows !== 1 ? 's' : ''} generated`;
+      resultBar.className = 'result-bar visible';
+
+      buildTable(rows.slice(0, 21));
+      previewNote.textContent = `Showing ${Math.min(20, totalRows)} of ${totalRows} rows`;
+      previewSec.className = 'preview-section visible';
+
+    } catch (err) {
+      statusEl.className = 'status error';
+      statusText.textContent = '❌ ' + err.message;
+    } finally {
+      convertBtn.disabled = false;
+    }
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    if (!outputBlob) return;
+    const url = URL.createObjectURL(outputBlob);
+    const a = Object.assign(document.createElement('a'), { href: url, download: 'fynd_catalog_output.xlsx' });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  });
+
+  function buildTable(rows) {
+    const table = document.getElementById('previewTable');
+    table.innerHTML = '';
+    if (!rows.length) return;
+    const thead = document.createElement('thead');
+    const hrow = document.createElement('tr');
+    rows[0].forEach(c => { const th = document.createElement('th'); th.textContent = c; th.title = c; hrow.appendChild(th); });
+    thead.appendChild(hrow); table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    rows.slice(1).forEach(row => {
+      const tr = document.createElement('tr');
+      rows[0].forEach((_, i) => {
+        const td = document.createElement('td');
+        const v = String(row[i] ?? '');
+        td.textContent = v; td.title = v;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+  }
+
+  function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+</script>
+</body>
 </html>

@@ -1,0 +1,15 @@
+Timeout: 30
+MemoryMB: 256
+CPU: 0.25
+Min: 1
+Max: 3
+AutoStop: false
+PortMap:
+  - Name: http
+    Port: 3000
+    Protocol: http
+Env:
+  - Key: NODE_ENV
+    Value: production
+  - Key: PORT
+    Value: "3000"
