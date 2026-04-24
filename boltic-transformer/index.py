@@ -1,46 +1,52 @@
 import io
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import Response
-from fastapi.middleware.cors import CORSMiddleware
+from flask import jsonify, make_response
 from transformer import transform
 
-app = FastAPI(title="Cottonworld Transformer")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["POST", "GET", "OPTIONS"],
-    allow_headers=["*"],
-    expose_headers=["X-Warnings", "Content-Disposition"],
-)
+def handler(request):
+    # CORS preflight
+    if request.method == "OPTIONS":
+        res = make_response("", 204)
+        res.headers["Access-Control-Allow-Origin"] = "*"
+        res.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
+        res.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        res.headers["Access-Control-Expose-Headers"] = "X-Warnings, Content-Disposition"
+        return res
 
+    # Health check
+    if request.method == "GET":
+        res = jsonify({"status": "ok"})
+        res.headers["Access-Control-Allow-Origin"] = "*"
+        return res
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+    # Transform
+    if request.method != "POST":
+        return jsonify({"detail": "Method not allowed"}), 405
 
+    if "file" not in request.files:
+        return jsonify({"detail": "No file uploaded. Send an xlsx as multipart/form-data field 'file'."}), 400
 
-@app.post("/transform")
-async def transform_file(file: UploadFile = File(...)):
+    file = request.files["file"]
     if not file.filename.endswith(".xlsx"):
-        raise HTTPException(status_code=400, detail="Only .xlsx files are supported")
+        return jsonify({"detail": "Only .xlsx files are supported"}), 400
 
-    contents = await file.read()
     try:
+        contents = file.read()
         buf, warnings, _ = transform(io.BytesIO(contents))
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return jsonify({"detail": str(e)}), 400
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Transform failed: {str(e)}")
+        return jsonify({"detail": f"Transform failed: {str(e)}"}), 500
 
-    # HTTP headers are Latin-1; sanitize Unicode chars (em-dashes, arrows, etc.)
+    # HTTP headers are Latin-1 only — sanitize Unicode chars (em-dashes, arrows, etc.)
     warnings_safe = "||".join(warnings).encode("latin-1", errors="replace").decode("latin-1")
-    headers = {
-        "X-Warnings": warnings_safe,
-        "Content-Disposition": 'attachment; filename="fynd_catalog_output.xlsx"',
-    }
-    return Response(
-        content=buf.getvalue(),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers=headers,
+
+    response = make_response(buf.getvalue())
+    response.headers["Content-Type"] = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+    response.headers["Content-Disposition"] = 'attachment; filename="fynd_catalog_output.xlsx"'
+    response.headers["X-Warnings"] = warnings_safe
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Expose-Headers"] = "X-Warnings, Content-Disposition"
+    return response
