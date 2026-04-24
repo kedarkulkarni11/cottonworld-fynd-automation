@@ -1,0 +1,18 @@
+{
+  "brand": "cottonworld",
+  "category": "Others Level 3",
+  "tax_rule": "Tiered Tax Rule – 5% & 18% (Eff. 22 Sep 2025) (2)",
+  "country_of_origin": "India",
+  "gtin_type": "EAN",
+  "currency": "INR",
+  "length_cm": 1,
+  "width_cm": 1,
+  "height_cm": 1,
+  "weight_gram": 200,
+  "trader_type": "Manufacturer",
+  "trader_name": "Lekhraj Corp Pvt Ltd",
+  "trader_address": "GALA-F, SIDHWA ESTATE, OLD BMP BUILDING, N.A. SAWANT MARG, Colaba, Mumbai City, Maharashtra, 400005",
+  "return_time_limit": 30,
+  "return_time_unit": "Days",
+  "collection": "CWC"
+}

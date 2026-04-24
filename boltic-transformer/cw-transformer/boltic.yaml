@@ -1,0 +1,27 @@
+app: "cw-transformer"
+region: "asia-south1"
+handler: "index.handler"
+language: "python/3"
+
+serverlessConfig:
+  serverlessId: "e6e056dc-a3ab-4e45-9182-8054a919427e"
+  Name: "cw-transformer"
+  Description: "Cottonworld Logic ERP to Fynd Catalog transformer"
+  Runtime: "code"
+  Env: {}
+  PortMap: []
+  Scaling:
+    AutoStop: true
+    Min: 0
+    Max: 5
+    MaxIdleTime: 300
+  Resources:
+    CPU: 0.5
+    MemoryMB: 512
+    MemoryMaxMB: 1024
+  Timeout: 60
+  Validations: null
+
+build:
+  builtin: dockerfile
+  ignorefile: .gitignore

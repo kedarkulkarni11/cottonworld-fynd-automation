@@ -1,0 +1,18 @@
+{
+  "COTTON/BAMBOO/ELASTANE": "Cotton",
+  "COTTON/BAMBOO": "Cotton",
+  "COTTON/BAM": "Cotton",
+  "COTTON/ELASTANE": "Cotton",
+  "COTTON/POLYESTER": "Cotton",
+  "COTTON/LINEN": "Cotton",
+  "COTTON": "Cotton",
+  "LINEN/COTTON": "Linen",
+  "LINEN": "Linen",
+  "VISCOSE/COTTON": "Viscose",
+  "VISCOSE": "Viscose",
+  "POLYESTER": "Polyester",
+  "SILK": "Silk",
+  "WOOL": "Wool",
+  "MODAL": "Modal",
+  "RAYON": "Rayon"
+}
