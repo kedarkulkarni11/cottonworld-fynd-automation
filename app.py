@@ -49,93 +49,117 @@ def converter_page():
             f"Uploaded: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)"
         )
 
+        # Invalidate cached result if a new file is uploaded
+        current_key = f"{uploaded_file.name}::{uploaded_file.size}"
+        if st.session_state.get("conv_source_key") != current_key:
+            st.session_state.pop("conv_result", None)
+            st.session_state["conv_source_key"] = current_key
+
         if st.button("Convert to Fynd Template", type="primary"):
             with st.spinner("Transforming data..."):
                 try:
                     output_buf, warnings, output_df = transform(uploaded_file)
-
-                    st.success("Conversion complete!")
-
-                    # ---- Summary metrics ----
-                    total_rows = len(output_df)
-                    product_rows = output_df["Name"].astype(str).str.strip()
-                    num_products = (product_rows != "").sum()
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Total rows (SKUs)", f"{total_rows}")
-                    col2.metric("Unique products", f"{num_products}")
-                    col3.metric("Warnings", f"{len(warnings)}")
-
-                    # ---- Preview table ----
-                    st.divider()
-                    st.subheader("Preview")
-                    st.caption(
-                        "First 20 rows of the generated file. Toggle below to "
-                        "see only key columns or the full template (102 columns)."
-                    )
-
-                    key_cols = [
-                        "Name", "Item Code", "Brand", "Category", "HS Code",
-                        "Gtin Value", "Size", "Actual Price", "Currency",
-                        "Colour", "Material",
-                        "Custom Attribute 1",  # Department
-                        "Custom Attribute 2",  # Fit
-                        "Custom Attribute 3",  # Gender
-                        "Custom Attribute 5",  # Collar
-                        "Custom Attribute 7",  # Sleeve
-                        "Custom Attribute 14", # Style No
-                        "Custom Attribute 20", # Fabric No
-                    ]
-                    view = st.radio(
-                        "View",
-                        ["Key columns only", "All columns"],
-                        horizontal=True,
-                        label_visibility="collapsed",
-                    )
-                    preview_df = output_df.head(20).fillna("")
-                    if view == "Key columns only":
-                        preview_df = preview_df[key_cols]
-                    st.dataframe(preview_df, use_container_width=True, hide_index=True)
-
-                    st.caption(
-                        f"Showing 20 of {total_rows} rows. Download the full "
-                        "file below to see everything."
-                    )
-
-                    # ---- Download ----
-                    st.divider()
-                    output_filename = (
-                        uploaded_file.name.replace(".xlsx", "")
-                        + "_fynd_upload.xlsx"
-                    )
-                    st.download_button(
-                        label="Download Fynd Upload File",
-                        data=output_buf,
-                        file_name=output_filename,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary",
-                    )
-
-                    st.info(
-                        "📌 **Before uploading to Fynd:** open the downloaded file, "
-                        "verify a few product rows (Name, HS Code, Price, Custom Attributes), "
-                        "and review any warnings listed below."
-                    )
-
-                    if warnings:
-                        st.divider()
-                        st.warning(
-                            f"**{len(warnings)} warning(s) during conversion** — "
-                            "the file was generated, but review these before uploading to Fynd:"
-                        )
-                        with st.expander("View warnings", expanded=True):
-                            for w in warnings:
-                                st.markdown(f"- {w}")
-
+                    st.session_state["conv_result"] = {
+                        "buf_bytes": output_buf.getvalue(),
+                        "warnings": warnings,
+                        "df": output_df,
+                        "source_name": uploaded_file.name,
+                    }
                 except ValueError as e:
+                    st.session_state.pop("conv_result", None)
                     st.error(f"Error: {e}")
                 except Exception as e:
+                    st.session_state.pop("conv_result", None)
                     st.error(f"Unexpected error: {e}")
                     st.exception(e)
+
+        # Render preview/download from cached result so widget interactions
+        # (e.g. Key-vs-All-columns radio) don't wipe the output.
+        if "conv_result" in st.session_state:
+            result = st.session_state["conv_result"]
+            output_df = result["df"]
+            warnings = result["warnings"]
+
+            st.success("Conversion complete!")
+
+            # ---- Summary metrics ----
+            total_rows = len(output_df)
+            product_rows = output_df["Name"].astype(str).str.strip()
+            num_products = (product_rows != "").sum()
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total rows (SKUs)", f"{total_rows}")
+            col2.metric("Unique products", f"{num_products}")
+            col3.metric("Warnings", f"{len(warnings)}")
+
+            # ---- Preview table ----
+            st.divider()
+            st.subheader("Preview")
+            st.caption(
+                "First 20 rows of the generated file. Toggle below to "
+                "see only key columns or the full template (102 columns)."
+            )
+
+            key_cols = [
+                "Name", "Item Code", "Brand", "Category", "HS Code",
+                "Gtin Value", "Size", "Actual Price", "Currency",
+                "Colour", "Material",
+                "Custom Attribute 1",  # Department
+                "Custom Attribute 2",  # Fit
+                "Custom Attribute 3",  # Gender
+                "Custom Attribute 5",  # Collar
+                "Custom Attribute 7",  # Sleeve
+                "Custom Attribute 14", # Style No
+                "Custom Attribute 20", # Fabric No
+            ]
+            view = st.radio(
+                "View",
+                ["Key columns only", "All columns"],
+                horizontal=True,
+                label_visibility="collapsed",
+                key="preview_view",
+            )
+            # Cast to str so Streamlit/PyArrow doesn't choke on
+            # mixed-type columns (e.g. Return Time Limit is int on
+            # product rows, '' on variant rows).
+            preview_df = output_df.head(20).fillna("").astype(str)
+            if view == "Key columns only":
+                preview_df = preview_df[key_cols]
+            st.dataframe(preview_df, use_container_width=True, hide_index=True)
+
+            st.caption(
+                f"Showing 20 of {total_rows} rows. Download the full "
+                "file below to see everything."
+            )
+
+            # ---- Download ----
+            st.divider()
+            output_filename = (
+                result["source_name"].replace(".xlsx", "")
+                + "_fynd_upload.xlsx"
+            )
+            st.download_button(
+                label="Download Fynd Upload File",
+                data=result["buf_bytes"],
+                file_name=output_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+            )
+
+            st.info(
+                "📌 **Before uploading to Fynd:** open the downloaded file, "
+                "verify a few product rows (Name, HS Code, Price, Custom Attributes), "
+                "and review any warnings listed below."
+            )
+
+            if warnings:
+                st.divider()
+                st.warning(
+                    f"**{len(warnings)} warning(s) during conversion** — "
+                    "the file was generated, but review these before uploading to Fynd:"
+                )
+                with st.expander("View warnings", expanded=True):
+                    for w in warnings:
+                        st.markdown(f"- {w}")
 
     st.divider()
     st.caption("Cottonworld Automation Tool v2.1 | All sections & departments")
