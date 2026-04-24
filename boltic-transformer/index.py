@@ -33,9 +33,11 @@ async def transform_file(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Transform failed: {str(e)}")
 
+    # HTTP headers are Latin-1; sanitize Unicode chars (em-dashes, arrows, etc.)
+    warnings_safe = "||".join(warnings).encode("latin-1", errors="replace").decode("latin-1")
     headers = {
-        "X-Warnings": "||".join(warnings),
-        "Content-Disposition": f'attachment; filename="fynd_catalog_output.xlsx"',
+        "X-Warnings": warnings_safe,
+        "Content-Disposition": 'attachment; filename="fynd_catalog_output.xlsx"',
     }
     return Response(
         content=buf.getvalue(),
