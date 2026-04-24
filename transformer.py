@@ -259,10 +259,11 @@ def find_header_row(df_raw: pd.DataFrame) -> int | None:
 # Main transform
 # ---------------------------------------------------------------------------
 
-def transform(input_file) -> tuple[BytesIO, list[str]]:
+def transform(input_file) -> tuple[BytesIO, list[str], pd.DataFrame]:
     """
     Read Logic ERP xlsx, transform to Fynd Platform template.
-    Returns (BytesIO of output xlsx, list of warning strings).
+    Returns (BytesIO of output xlsx, list of warning strings, output DataFrame
+    for preview).
     """
     warnings: list[str] = []
 
@@ -465,4 +466,4 @@ def transform(input_file) -> tuple[BytesIO, list[str]]:
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         output_df.to_excel(writer, sheet_name="Sheet1", index=False)
     buf.seek(0)
-    return buf, unique_warnings
+    return buf, unique_warnings, output_df

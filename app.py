@@ -52,15 +52,61 @@ def converter_page():
         if st.button("Convert to Fynd Template", type="primary"):
             with st.spinner("Transforming data..."):
                 try:
-                    output_buf, warnings = transform(uploaded_file)
+                    output_buf, warnings, output_df = transform(uploaded_file)
 
                     st.success("Conversion complete!")
 
+                    # ---- Summary metrics ----
+                    total_rows = len(output_df)
+                    product_rows = output_df["Name"].astype(str).str.strip()
+                    num_products = (product_rows != "").sum()
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Total rows (SKUs)", f"{total_rows}")
+                    col2.metric("Unique products", f"{num_products}")
+                    col3.metric("Warnings", f"{len(warnings)}")
+
+                    # ---- Preview table ----
+                    st.divider()
+                    st.subheader("Preview")
+                    st.caption(
+                        "First 20 rows of the generated file. Toggle below to "
+                        "see only key columns or the full template (102 columns)."
+                    )
+
+                    key_cols = [
+                        "Name", "Item Code", "Brand", "Category", "HS Code",
+                        "Gtin Value", "Size", "Actual Price", "Currency",
+                        "Colour", "Material",
+                        "Custom Attribute 1",  # Department
+                        "Custom Attribute 2",  # Fit
+                        "Custom Attribute 3",  # Gender
+                        "Custom Attribute 5",  # Collar
+                        "Custom Attribute 7",  # Sleeve
+                        "Custom Attribute 14", # Style No
+                        "Custom Attribute 20", # Fabric No
+                    ]
+                    view = st.radio(
+                        "View",
+                        ["Key columns only", "All columns"],
+                        horizontal=True,
+                        label_visibility="collapsed",
+                    )
+                    preview_df = output_df.head(20).fillna("")
+                    if view == "Key columns only":
+                        preview_df = preview_df[key_cols]
+                    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+
+                    st.caption(
+                        f"Showing 20 of {total_rows} rows. Download the full "
+                        "file below to see everything."
+                    )
+
+                    # ---- Download ----
+                    st.divider()
                     output_filename = (
                         uploaded_file.name.replace(".xlsx", "")
                         + "_fynd_upload.xlsx"
                     )
-
                     st.download_button(
                         label="Download Fynd Upload File",
                         data=output_buf,
