@@ -11,16 +11,14 @@
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const bodyParser = require('body-parser');
-const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
-const { readFileSync } = require('fs');
 const { setupFdk } = require('@gofynd/fdk-extension-javascript/express');
 const { SQLiteStorage } = require('@gofynd/fdk-extension-javascript/express/storage');
 
 const sqliteInstance = new sqlite3.Database(process.env.SQLITE_PATH || '/tmp/session_storage.db');
 
-const CW_TRANSFORMER_URL =
-  process.env.CW_TRANSFORMER_URL || 'https://cottonworld-fynd-automation.onrender.com';
+const STREAMLIT_URL =
+  process.env.STREAMLIT_URL || 'https://cottonworld-fynd-automation.onrender.com';
 
 const fdkExtension = setupFdk({
   api_key: process.env.EXTENSION_API_KEY,
@@ -59,17 +57,27 @@ app.use('/', fdkExtension.fdkHandler);
 // Simple health check (Render uses this)
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
 
-// Landing page — self-contained upload UI that calls the transformer API.
+// Landing page — iframe wrapping the Streamlit app.
 app.get('/', (_req, res) => {
-  const html = readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf-8')
-    .replace('__CW_TRANSFORMER_URL__', CW_TRANSFORMER_URL);
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  iframe { display: block; width: 100%; height: 100vh; border: none; }
+</style>
+</head>
+<body>
+  <iframe src="${STREAMLIT_URL}" allow="clipboard-write" allowfullscreen></iframe>
+</body>
+</html>`;
   res
     .status(200)
     .set('Content-Type', 'text/html; charset=utf-8')
-    // Allow being embedded by Fynd Commerce Platform
     .set('Content-Security-Policy', [
       "frame-ancestors 'self' https://*.fynd.com https://*.fyndx0.com https://*.fyndx1.com https://*.fyndx5.com;",
-      `connect-src 'self' ${CW_TRANSFORMER_URL};`,
+      `frame-src ${STREAMLIT_URL};`,
     ].join(' '))
     .send(html);
 });
