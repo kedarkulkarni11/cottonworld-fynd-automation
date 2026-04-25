@@ -1,71 +1,52 @@
 """
 Cottonworld Logic ERP -> Fynd Platform Transformer
 Single-file Boltic serverless handler.
-All data inlined and uses only openpyxl + stdlib (no pandas).
+Uses ONLY Python stdlib + Flask (pre-installed by Boltic).
+No openpyxl, no pandas — xlsx reading/writing via zipfile + xml.etree.
 """
 from __future__ import annotations
 
-import csv
 import io
 import math
 import re
-from io import BytesIO, StringIO
+import xml.etree.ElementTree as ET
+import zipfile
+from io import BytesIO
 from typing import Any
 
-import openpyxl
 from flask import jsonify, make_response
 
 # ---------------------------------------------------------------------------
-# Reference data (inlined — Boltic only deploys handler.py)
+# Reference data (all inlined)
 # ---------------------------------------------------------------------------
 
 SLEEVE_MAP = {
-    "FS": "Full Sleeves",
-    "HE FS": "Full Sleeves",
-    "HS": "Half Sleeves",
-    "HE HS": "Half Sleeves",
+    "FS": "Full Sleeves", "HE FS": "Full Sleeves",
+    "HS": "Half Sleeves", "HE HS": "Half Sleeves",
     "3/4 SLEEVE WITH FOLD": "3/4 Sleeve with Fold",
     "3/4 SLV WITH BIG CUFF": "3/4 Sleeve with Big Cuff",
-    "BAT SLEEVE": "Bat Sleeve",
-    "ELBOW LENGTH SLV": "Elbow Length Sleeve",
+    "BAT SLEEVE": "Bat Sleeve", "ELBOW LENGTH SLV": "Elbow Length Sleeve",
     "EXTENDED SHORT SLEEVE": "Extended Short Sleeve",
-    "SLEEVELESS": "Sleeveless",
-    "CAP SLEEVE": "Cap Sleeve",
-    "(NIL)": "",
+    "SLEEVELESS": "Sleeveless", "CAP SLEEVE": "Cap Sleeve", "(NIL)": "",
 }
 
 COLLAR_MAP = {
-    "ROUND NECK": "Rounded",
-    "HOODED": "Hooded",
-    "SHIRT COLLAR": "Shirt Collar",
-    "BUTTON DOWN": "Button Down",
-    "V NECK": "V Neck",
-    "MANDARIN COLLAR": "Mandarin Collar",
-    "POLO COLLAR": "Polo Collar",
-    "BAND COLLAR": "Band Collar",
-    "BOAT NECK": "Boat Neck",
-    "SQUARE NECK": "Square Neck",
-    "HIGH NECK": "High Neck",
-    "(NIL)": "",
+    "ROUND NECK": "Rounded", "HOODED": "Hooded",
+    "SHIRT COLLAR": "Shirt Collar", "BUTTON DOWN": "Button Down",
+    "V NECK": "V Neck", "MANDARIN COLLAR": "Mandarin Collar",
+    "POLO COLLAR": "Polo Collar", "BAND COLLAR": "Band Collar",
+    "BOAT NECK": "Boat Neck", "SQUARE NECK": "Square Neck",
+    "HIGH NECK": "High Neck", "(NIL)": "",
 }
 
 MATERIAL_MAP = {
-    "COTTON/BAMBOO/ELASTANE": "Cotton",
-    "COTTON/BAMBOO": "Cotton",
-    "COTTON/BAM": "Cotton",
-    "COTTON/ELASTANE": "Cotton",
-    "COTTON/POLYESTER": "Cotton",
-    "COTTON/LINEN": "Cotton",
-    "COTTON": "Cotton",
-    "LINEN/COTTON": "Linen",
-    "LINEN": "Linen",
-    "VISCOSE/COTTON": "Viscose",
-    "VISCOSE": "Viscose",
-    "POLYESTER": "Polyester",
-    "SILK": "Silk",
-    "WOOL": "Wool",
-    "MODAL": "Modal",
-    "RAYON": "Rayon",
+    "COTTON/BAMBOO/ELASTANE": "Cotton", "COTTON/BAMBOO": "Cotton",
+    "COTTON/BAM": "Cotton", "COTTON/ELASTANE": "Cotton",
+    "COTTON/POLYESTER": "Cotton", "COTTON/LINEN": "Cotton",
+    "COTTON": "Cotton", "LINEN/COTTON": "Linen", "LINEN": "Linen",
+    "VISCOSE/COTTON": "Viscose", "VISCOSE": "Viscose",
+    "POLYESTER": "Polyester", "SILK": "Silk", "WOOL": "Wool",
+    "MODAL": "Modal", "RAYON": "Rayon",
 }
 
 SECTION_GENDER = {
@@ -101,71 +82,41 @@ STATIC = {
     "country_of_origin": "India",
     "gtin_type": "EAN",
     "currency": "INR",
-    "length_cm": 1,
-    "width_cm": 1,
-    "height_cm": 1,
-    "weight_gram": 200,
+    "length_cm": 1, "width_cm": 1, "height_cm": 1, "weight_gram": 200,
     "trader_type": "Manufacturer",
     "trader_name": "Lekhraj Corp Pvt Ltd",
     "trader_address": "GALA-F, SIDHWA ESTATE, OLD BMP BUILDING, N.A. SAWANT MARG, Colaba, Mumbai City, Maharashtra, 400005",
-    "return_time_limit": 30,
-    "return_time_unit": "Days",
+    "return_time_limit": 30, "return_time_unit": "Days",
 }
 
 HSN_LOOKUP = {
     ("BOYS", "MASK"): "62171010",
-    ("LADIES", "BLOUSE"): "61061000",
-    ("LADIES", "BOXERS"): "61034300",
-    ("LADIES", "CLBAG"): "42022240",
-    ("LADIES", "CULOTTE"): "61034200",
-    ("LADIES", "DRESS"): "61044200",
-    ("LADIES", "ETH DRESS"): "62044911",
-    ("LADIES", "ETH KURTA"): "62113900",
-    ("LADIES", "ETH KURTI"): "62113900",
-    ("LADIES", "ETH PALLAZO"): "62041300",
-    ("LADIES", "JACKET"): "61033200",
-    ("LADIES", "JUMPER"): "61044200",
-    ("LADIES", "JUMPSUIT"): "62114990",
-    ("LADIES", "KAFTAN"): "62114210",
-    ("LADIES", "KDRESS"): "61044200",
-    ("LADIES", "KNIT SHRUG"): "61033200",
-    ("LADIES", "KPANTS"): "61034200",
-    ("LADIES", "KPYJAMA SUIT"): "62082100",
-    ("LADIES", "KSHORTS"): "61046200",
-    ("LADIES", "KSKIRT"): "61045200",
-    ("LADIES", "KTIGHTS"): "61034200",
-    ("LADIES", "KURTA"): "62114210",
-    ("LADIES", "KURTI"): "61061000",
-    ("LADIES", "KVEST"): "61091000",
-    ("LADIES", "MASK"): "62171000",
-    ("LADIES", "OVERLAY"): "61044990",
-    ("LADIES", "PAJAMA"): "62082100",
-    ("LADIES", "PANTS"): "61034200",
-    ("LADIES", "PYJAMA"): "62082100",
-    ("LADIES", "PYJAMA SUIT"): "62082100",
-    ("LADIES", "SHIRTS"): "62063000",
-    ("LADIES", "SHORTS"): "61034300",
-    ("LADIES", "SHRUG"): "61033200",
-    ("LADIES", "SKIRT"): "61045200",
-    ("LADIES", "SOCKS"): "62171010",
-    ("LADIES", "TSHIRT"): "61091000",
-    ("LADIES", "WAIST COAT"): "62113200",
-    ("MENS", "BOXERS"): "62071100",
-    ("MENS", "ETHNI KURTA"): "62113990",
-    ("MENS", "JACKET"): "61033200",
-    ("MENS", "JOGGERS"): "61121100",
-    ("MENS", "KPANTS"): "61034200",
-    ("MENS", "KSHORTS"): "61034200",
-    ("MENS", "KURTA"): "62114210",
-    ("MENS", "KVEST"): "62079990",
-    ("MENS", "PANTS"): "61034200",
-    ("MENS", "SHIRTS"): "62052000",
-    ("MENS", "SHORTS"): "61034200",
-    ("MENS", "SOCKS"): "62171010",
-    ("MENS", "SWEAT"): "61091000",
-    ("MENS", "TRACK PANT"): "61034200",
-    ("MENS", "TSHIRT"): "61091000",
-    ("UNISEX", "TOTE BAG"): "42022220",
+    ("LADIES", "BLOUSE"): "61061000", ("LADIES", "BOXERS"): "61034300",
+    ("LADIES", "CLBAG"): "42022240", ("LADIES", "CULOTTE"): "61034200",
+    ("LADIES", "DRESS"): "61044200", ("LADIES", "ETH DRESS"): "62044911",
+    ("LADIES", "ETH KURTA"): "62113900", ("LADIES", "ETH KURTI"): "62113900",
+    ("LADIES", "ETH PALLAZO"): "62041300", ("LADIES", "JACKET"): "61033200",
+    ("LADIES", "JUMPER"): "61044200", ("LADIES", "JUMPSUIT"): "62114990",
+    ("LADIES", "KAFTAN"): "62114210", ("LADIES", "KDRESS"): "61044200",
+    ("LADIES", "KNIT SHRUG"): "61033200", ("LADIES", "KPANTS"): "61034200",
+    ("LADIES", "KPYJAMA SUIT"): "62082100", ("LADIES", "KSHORTS"): "61046200",
+    ("LADIES", "KSKIRT"): "61045200", ("LADIES", "KTIGHTS"): "61034200",
+    ("LADIES", "KURTA"): "62114210", ("LADIES", "KURTI"): "61061000",
+    ("LADIES", "KVEST"): "61091000", ("LADIES", "MASK"): "62171000",
+    ("LADIES", "OVERLAY"): "61044990", ("LADIES", "PAJAMA"): "62082100",
+    ("LADIES", "PANTS"): "61034200", ("LADIES", "PYJAMA"): "62082100",
+    ("LADIES", "PYJAMA SUIT"): "62082100", ("LADIES", "SHIRTS"): "62063000",
+    ("LADIES", "SHORTS"): "61034300", ("LADIES", "SHRUG"): "61033200",
+    ("LADIES", "SKIRT"): "61045200", ("LADIES", "SOCKS"): "62171010",
+    ("LADIES", "TSHIRT"): "61091000", ("LADIES", "WAIST COAT"): "62113200",
+    ("MENS", "BOXERS"): "62071100", ("MENS", "ETHNI KURTA"): "62113990",
+    ("MENS", "JACKET"): "61033200", ("MENS", "JOGGERS"): "61121100",
+    ("MENS", "KPANTS"): "61034200", ("MENS", "KSHORTS"): "61034200",
+    ("MENS", "KURTA"): "62114210", ("MENS", "KVEST"): "62079990",
+    ("MENS", "PANTS"): "61034200", ("MENS", "SHIRTS"): "62052000",
+    ("MENS", "SHORTS"): "61034200", ("MENS", "SOCKS"): "62171010",
+    ("MENS", "SWEAT"): "61091000", ("MENS", "TRACK PANT"): "61034200",
+    ("MENS", "TSHIRT"): "61091000", ("UNISEX", "TOTE BAG"): "42022220",
 }
 
 FYND_FIXED_COLUMNS = [
@@ -185,6 +136,163 @@ FYND_FIXED_COLUMNS = [
 ]
 FYND_CUSTOM_ATTRS = [f"Custom Attribute {i}" for i in range(1, 51)]
 FYND_COLUMNS = FYND_FIXED_COLUMNS + FYND_CUSTOM_ATTRS
+
+
+# ---------------------------------------------------------------------------
+# Stdlib xlsx reader
+# ---------------------------------------------------------------------------
+
+_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+
+
+def _col_idx(ref: str) -> int:
+    """'A' -> 0, 'B' -> 1, 'AA' -> 26, etc."""
+    letters = "".join(c for c in ref if c.isalpha())
+    n = 0
+    for c in letters.upper():
+        n = n * 26 + (ord(c) - 64)
+    return n - 1
+
+
+def _read_xlsx(data: bytes) -> list[list]:
+    """Return all rows from xlsx bytes as list of lists."""
+    with zipfile.ZipFile(BytesIO(data)) as zf:
+        names = zf.namelist()
+
+        # Shared strings
+        shared: list[str] = []
+        if "xl/sharedStrings.xml" in names:
+            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            for si in root:
+                parts = [t.text or "" for t in si.iter(f"{{{_NS}}}t")]
+                shared.append("".join(parts))
+
+        # Worksheet
+        ws_path = "xl/worksheets/sheet1.xml"
+        if ws_path not in names:
+            ws_path = next(
+                (n for n in names if n.startswith("xl/worksheets/") and n.endswith(".xml")),
+                None,
+            )
+            if ws_path is None:
+                raise ValueError("No worksheet found in xlsx file")
+
+        root = ET.fromstring(zf.read(ws_path))
+        all_rows: list[list] = []
+
+        for row_el in root.iter(f"{{{_NS}}}row"):
+            cells: dict[int, Any] = {}
+            for c_el in row_el:
+                ref = c_el.get("r", "")
+                if not ref:
+                    continue
+                ci = _col_idx(ref)
+                t = c_el.get("t", "")
+                v_el = c_el.find(f"{{{_NS}}}v")
+
+                if t == "s":
+                    idx = int(v_el.text) if v_el is not None and v_el.text else 0
+                    cells[ci] = shared[idx] if idx < len(shared) else ""
+                elif t == "inlineStr":
+                    t_el = c_el.find(f".//{{{_NS}}}t")
+                    cells[ci] = t_el.text if t_el is not None else ""
+                elif t == "b":
+                    cells[ci] = bool(int(v_el.text)) if v_el is not None else False
+                else:
+                    if v_el is not None and v_el.text is not None:
+                        try:
+                            f = float(v_el.text)
+                            cells[ci] = int(f) if f == int(f) else f
+                        except ValueError:
+                            cells[ci] = v_el.text
+                    else:
+                        cells[ci] = None
+
+            if cells:
+                width = max(cells.keys()) + 1
+                all_rows.append([cells.get(i) for i in range(width)])
+
+    return all_rows
+
+
+# ---------------------------------------------------------------------------
+# Stdlib xlsx writer
+# ---------------------------------------------------------------------------
+
+def _col_name(n: int) -> str:
+    """0 -> 'A', 1 -> 'B', 26 -> 'AA', etc."""
+    s = ""
+    n += 1
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def _xml_esc(v: Any) -> str:
+    s = "" if v is None else str(v)
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def _write_xlsx(columns: list, rows: list[list]) -> bytes:
+    """Write table to xlsx bytes using only stdlib."""
+    all_rows = [columns] + rows
+
+    sheet_parts = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+        "<sheetData>",
+    ]
+    for ri, row_vals in enumerate(all_rows, start=1):
+        cells = []
+        for ci, val in enumerate(row_vals):
+            ref = f"{_col_name(ci)}{ri}"
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                cells.append(f'<c r="{ref}"><v>{val}</v></c>')
+            else:
+                cells.append(f'<c r="{ref}" t="inlineStr"><is><t>{_xml_esc(val)}</t></is></c>')
+        sheet_parts.append(f'<row r="{ri}">{"".join(cells)}</row>')
+    sheet_parts += ["</sheetData>", "</worksheet>"]
+    sheet_xml = "".join(sheet_parts)
+
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        "</Types>"
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        "</Relationships>"
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+        ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>'
+        "</workbook>"
+    )
+    wb_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        "</Relationships>"
+    )
+
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", rels)
+        zf.writestr("xl/workbook.xml", workbook)
+        zf.writestr("xl/_rels/workbook.xml.rels", wb_rels)
+        zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+    buf.seek(0)
+    return buf.read()
 
 
 # ---------------------------------------------------------------------------
@@ -214,12 +322,11 @@ def strip_percentages(composition: str) -> str:
     if not composition:
         return ""
     text = re.sub(r"\d+\s*%\s*", "", composition)
-    text = re.sub(r"\s+", " ", text).strip(" ,/-")
-    return text.title()
+    return re.sub(r"\s+", " ", text).strip(" ,/-").title()
 
 
-def extract_primary_material(fabric_sub_type_raw: str) -> str:
-    val = clean_val(fabric_sub_type_raw)
+def extract_primary_material(raw: str) -> str:
+    val = clean_val(raw)
     if not val:
         return ""
     upper = val.upper()
@@ -231,8 +338,8 @@ def extract_primary_material(fabric_sub_type_raw: str) -> str:
     return val.split("/")[0].strip().title()
 
 
-def map_sleeve_type(sleeve_raw: str, warnings: list) -> str:
-    val = clean_val(sleeve_raw).upper()
+def map_sleeve_type(raw: str, warnings: list) -> str:
+    val = clean_val(raw).upper()
     if not val:
         return ""
     if val in SLEEVE_MAP:
@@ -240,87 +347,75 @@ def map_sleeve_type(sleeve_raw: str, warnings: list) -> str:
     for key, mapped in SLEEVE_MAP.items():
         if key and key in val:
             return mapped
-    warnings.append(f"Unknown sleeve type '{sleeve_raw}' -- passed through as-is.")
+    warnings.append(f"Unknown sleeve type '{raw}' -- passed through as-is.")
     return val.title()
 
 
-def map_collar_style(collar_raw: str, warnings: list) -> str:
-    val = clean_val(collar_raw).upper()
+def map_collar_style(raw: str, warnings: list) -> str:
+    val = clean_val(raw).upper()
     if not val:
         return ""
     if val in COLLAR_MAP:
         return COLLAR_MAP[val]
-    warnings.append(f"Unknown neck/collar '{collar_raw}' -- passed through as-is.")
+    warnings.append(f"Unknown neck/collar '{raw}' -- passed through as-is.")
     return val.title()
 
 
 def gender_info(section: str) -> dict:
     key = section.upper().strip()
-    if key in SECTION_GENDER:
-        return SECTION_GENDER[key]
-    return {"gender": section.title(), "possessive": f"{section.title()}'s", "prefix": "X"}
+    return SECTION_GENDER.get(key, {"gender": section.title(), "possessive": f"{section.title()}'s", "prefix": "X"})
 
 
-def department_display(department: str) -> str:
-    key = department.upper().strip()
-    if key in DEPARTMENT_DISPLAY:
-        return DEPARTMENT_DISPLAY[key]
-    return department.title()
+def dept_display(department: str) -> str:
+    return DEPARTMENT_DISPLAY.get(department.upper().strip(), department.title())
 
 
-def build_product_name(section: str, composition1: str, fit: str,
-                       department: str, color: str) -> str:
+def build_name(section, composition1, fit, department, color) -> str:
     info = gender_info(section)
     parts = [info["possessive"]]
     comp = strip_percentages(clean_val(composition1))
     if comp:
         parts.append(comp)
-    fit_clean = clean_val(fit).title()
-    if fit_clean:
-        parts.append(fit_clean)
-    dept_disp = department_display(clean_val(department))
-    if dept_disp:
-        parts.append(dept_disp)
-    color_clean = clean_val(color).title()
-    if color_clean:
-        parts.append(color_clean)
+    fit_c = clean_val(fit).title()
+    if fit_c:
+        parts.append(fit_c)
+    dept = dept_display(clean_val(department))
+    if dept:
+        parts.append(dept)
+    col = clean_val(color).title()
+    if col:
+        parts.append(col)
     return " ".join(parts)
 
 
-def build_item_code(section: str, department: str, style_no: str,
-                    fabric_no: str, color: str) -> str:
+def build_item_code(section, department, style_no, fabric_no, color) -> str:
     info = gender_info(section)
-    prefix = info["prefix"]
-    dept = clean_val(department).upper().replace(" ", "-")
-    style = clean_val(style_no)
-    fabric = clean_val(fabric_no)
-    col = clean_val(color).upper().replace(" ", "-")
-    return f"{prefix}-{dept}-{style}-{fabric}-{col}"
+    return (
+        f"{info['prefix']}"
+        f"-{clean_val(department).upper().replace(' ', '-')}"
+        f"-{clean_val(style_no)}"
+        f"-{clean_val(fabric_no)}"
+        f"-{clean_val(color).upper().replace(' ', '-')}"
+    )
 
 
-def lookup_hs_code(section: str, department: str, warnings: list) -> str:
+def lookup_hs(section, department, warnings) -> str:
     sec = clean_val(section).upper()
     dept = clean_val(department).upper()
     if not sec or not dept:
         return ""
     hs = HSN_LOOKUP.get((sec, dept))
     if hs is None:
-        warnings.append(
-            f"No HSN mapping for Section='{sec}', Department='{dept}'. "
-            f"HS Code left blank."
-        )
+        warnings.append(f"No HSN for Section='{sec}', Dept='{dept}' — left blank.")
         return ""
     return hs
 
 
-def format_size(size_raw: str) -> str:
-    val = clean_val(size_raw).upper()
-    size_shortforms = {
-        "SMALL": "S", "MEDIUM": "M", "LARGE": "L",
-        "XLARGE": "XL", "XXLARGE": "XXL", "XSMALL": "XS",
-        "X-LARGE": "XL", "X-SMALL": "XS", "XX-LARGE": "XXL",
-    }
-    return size_shortforms.get(val, val)
+def fmt_size(raw: str) -> str:
+    val = clean_val(raw).upper()
+    return {"SMALL": "S", "MEDIUM": "M", "LARGE": "L", "XLARGE": "XL",
+            "XXLARGE": "XXL", "XSMALL": "XS", "X-LARGE": "XL",
+            "X-SMALL": "XS", "XX-LARGE": "XXL"}.get(val, val)
 
 
 def clean_barcode(raw: Any) -> str:
@@ -350,14 +445,12 @@ def find_col(headers: list, *candidates: str):
 # Transform
 # ---------------------------------------------------------------------------
 
-def transform(input_file) -> tuple:
-    warnings = []
+def transform(data: bytes) -> tuple[bytes, list[str]]:
+    warnings: list[str] = []
 
-    wb = openpyxl.load_workbook(input_file, data_only=True, read_only=True)
-    ws = wb.active
-    all_rows = [list(row) for row in ws.iter_rows(values_only=True)]
-    wb.close()
+    all_rows = _read_xlsx(data)
 
+    # Find header row
     header_idx = None
     for i, row in enumerate(all_rows):
         for val in row:
@@ -366,7 +459,6 @@ def transform(input_file) -> tuple:
                 break
         if header_idx is not None:
             break
-
     if header_idx is None:
         raise ValueError("Could not find 'OEM_BARCODE' header row in input file.")
 
@@ -418,8 +510,8 @@ def transform(input_file) -> tuple:
 
     valid_rows = [r for r in data_rows if not _is_empty(get(r, col_oem))]
 
-    groups: dict = {}
-    group_order = []
+    groups: dict[str, list] = {}
+    group_order: list[str] = []
     for row in valid_rows:
         key = (
             clean_val(get(row, col_style_no)) + "|" +
@@ -431,7 +523,7 @@ def transform(input_file) -> tuple:
             group_order.append(key)
         groups[key].append(row)
 
-    output_rows = []
+    output_rows: list[list] = []
 
     for key in group_order:
         group = groups[key]
@@ -463,41 +555,40 @@ def transform(input_file) -> tuple:
         rate         = clean_val(get(first, col_rate))
         order_no     = clean_val(get(first, col_order_no))
 
-        product_name = build_product_name(section, composition1, fit, department, color)
-        item_code    = build_item_code(section, department, style_no, fabric_no, color)
-        hs_code      = lookup_hs_code(section, department, warnings)
-        info         = gender_info(section)
-        gender       = info["gender"]
-        dept_disp    = department_display(department)
-        primary_material = extract_primary_material(fabric_sub_type)
-        material_display = strip_percentages(composition1)
+        product_name  = build_name(section, composition1, fit, department, color)
+        item_code     = build_item_code(section, department, style_no, fabric_no, color)
+        hs_code       = lookup_hs(section, department, warnings)
+        info          = gender_info(section)
+        gender        = info["gender"]
+        dept_disp     = dept_display(department)
+        primary_mat   = extract_primary_material(fabric_sub_type)
+        material_disp = strip_percentages(composition1)
         collar_mapped = map_collar_style(neck_collar, warnings)
         sleeve_mapped = map_sleeve_type(sleeve_type, warnings)
-        fit_display  = fit.title() if fit else ""
+        fit_display   = fit.title() if fit else ""
 
         for i, row in enumerate(group):
             is_first = (i == 0)
-            oem_barcode = clean_barcode(get(row, col_oem))
-            size = format_size(clean_val(get(row, col_size)))
-
+            oem = clean_barcode(get(row, col_oem))
+            size = fmt_size(clean_val(get(row, col_size)))
             mrp_raw = get(row, col_mrp)
             if _is_empty(mrp_raw):
-                mrp_val: Any = ""
+                mrp: Any = ""
             else:
                 try:
-                    mrp_val = int(float(str(mrp_raw)))
+                    mrp = int(float(str(mrp_raw)))
                 except (ValueError, TypeError):
-                    mrp_val = ""
+                    mrp = ""
 
             out = {col: "" for col in FYND_COLUMNS}
             out["Item Code"]                  = item_code
             out["Brand"]                      = STATIC["brand"]
             out["Gtin Type"]                  = STATIC["gtin_type"]
-            out["Gtin Value"]                 = oem_barcode
-            out["Seller Identifier"]          = oem_barcode
+            out["Gtin Value"]                 = oem
+            out["Seller Identifier"]          = oem
             out["Size"]                       = size
-            out["Actual Price"]               = mrp_val
-            out["Selling Price"]              = mrp_val
+            out["Actual Price"]               = mrp
+            out["Selling Price"]              = mrp
             out["Currency"]                   = STATIC["currency"]
             out["Length (cm)"]                = STATIC["length_cm"]
             out["Width (cm)"]                 = STATIC["width_cm"]
@@ -516,7 +607,7 @@ def transform(input_file) -> tuple:
                 out["Return Time Limit"] = STATIC["return_time_limit"]
                 out["Return Time Unit"]  = STATIC["return_time_unit"]
                 out["Colour"]            = color.title()
-                out["Material"]          = primary_material or material_display
+                out["Material"]          = primary_mat or material_disp
                 out["Custom Attribute 1"]  = dept_disp
                 out["Custom Attribute 2"]  = fit_display
                 out["Custom Attribute 3"]  = gender
@@ -541,29 +632,20 @@ def transform(input_file) -> tuple:
                 out["Custom Attribute 28"] = fabric_type
                 out["Custom Attribute 29"] = rate
 
-            output_rows.append(out)
+            output_rows.append([out.get(col, "") for col in FYND_COLUMNS])
 
     if not output_rows:
         raise ValueError("No valid product rows found in input file.")
 
-    seen: set = set()
-    unique_warnings = []
+    seen: set[str] = set()
+    unique_warnings: list[str] = []
     for w in warnings:
         if w not in seen:
             seen.add(w)
             unique_warnings.append(w)
 
-    out_wb = openpyxl.Workbook()
-    out_ws = out_wb.active
-    out_ws.title = "Sheet1"
-    out_ws.append(FYND_COLUMNS)
-    for row_dict in output_rows:
-        out_ws.append([row_dict.get(col, "") for col in FYND_COLUMNS])
-
-    buf = BytesIO()
-    out_wb.save(buf)
-    buf.seek(0)
-    return buf, unique_warnings
+    xlsx_bytes = _write_xlsx(FYND_COLUMNS, output_rows)
+    return xlsx_bytes, unique_warnings
 
 
 # ---------------------------------------------------------------------------
@@ -588,15 +670,14 @@ def handler(request):
         return jsonify({"detail": "Method not allowed"}), 405
 
     if "file" not in request.files:
-        return jsonify({"detail": "No file uploaded. Send xlsx as multipart/form-data field 'file'."}), 400
+        return jsonify({"detail": "No file uploaded. Send xlsx as field 'file'."}), 400
 
-    file = request.files["file"]
-    if not file.filename.endswith(".xlsx"):
+    f = request.files["file"]
+    if not f.filename.endswith(".xlsx"):
         return jsonify({"detail": "Only .xlsx files are supported"}), 400
 
     try:
-        contents = file.read()
-        buf, warnings = transform(io.BytesIO(contents))
+        xlsx_bytes, warnings = transform(f.read())
     except ValueError as e:
         return jsonify({"detail": str(e)}), 400
     except Exception as e:
@@ -604,10 +685,8 @@ def handler(request):
 
     warnings_safe = "||".join(warnings).encode("latin-1", errors="replace").decode("latin-1")
 
-    response = make_response(buf.getvalue())
-    response.headers["Content-Type"] = (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    response = make_response(xlsx_bytes)
+    response.headers["Content-Type"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     response.headers["Content-Disposition"] = 'attachment; filename="fynd_catalog_output.xlsx"'
     response.headers["X-Warnings"] = warnings_safe
     response.headers["Access-Control-Allow-Origin"] = "*"
