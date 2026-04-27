@@ -18,7 +18,7 @@ Designed to be embedded as a **private extension inside Fynd Commerce Platform**
    - Product Name: `Gender's Composition Fit Department Color`
    - Item Code: `{SectionPrefix}-{Dept}-{StyleNo}-{FabricNo}-{Color}`
    - HS Code: looked up from `data/hsn_lookup.csv` by `(Section, Department)`
-   - Category: `Others Level 3` (fixed)
+   - Category: `Others level 3` (fixed)
    - Tax Rule: `Tiered Tax Rule – 5% & 18% (Eff. 22 Sep 2025) (2)`
    - Custom Attributes 1–29 mapped to Logic columns per the doc
 4. Surfaces warnings for unknown sleeve/collar values and missing HSN rows.

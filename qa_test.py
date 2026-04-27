@@ -154,11 +154,11 @@ def test_mappings(df: pd.DataFrame) -> None:
     except AssertionError as e:
         fail("Item Code format", str(e))
 
-    # Category always "Others Level 3"
+    # Category always "Others level 3"
     try:
         cats = set(products["Category"].unique())
-        assert cats == {"Others Level 3"}, f"unexpected categories: {cats}"
-        ok("Category = 'Others Level 3' on all products")
+        assert cats == {"Others level 3"}, f"unexpected categories: {cats}"
+        ok("Category = 'Others level 3' on all products")
     except AssertionError as e:
         fail("Category constant", str(e))
 
@@ -371,8 +371,8 @@ def test_reference_data() -> None:
         fail("HS mapping", str(e))
 
     try:
-        assert STATIC["category"] == "Others Level 3"
-        ok("Category = Others Level 3")
+        assert STATIC["category"] == "Others level 3"
+        ok("Category = Others level 3")
     except AssertionError as e:
         fail("Category constant", str(e))
 

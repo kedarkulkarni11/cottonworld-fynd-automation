@@ -264,7 +264,7 @@ def how_to_use_page():
         | **Product Name** | `Gender's Composition Fit Department Color` — no percentages, no "Cottonworld" prefix |
         | **Item Code** | `{SectionPrefix}-{Dept}-{StyleNo}-{FabricNo}-{Color}` — one code per product, shared across size variants |
         | **Brand** | `cottonworld` (fixed) |
-        | **Category** | `Others Level 3` (fixed) |
+        | **Category** | `Others level 3` (fixed) |
         | **Tax Rule** | `Tiered Tax Rule – 5% & 18% (Eff. 22 Sep 2025) (2)` |
         | **HS Code** | Looked up from the **Section + Department** HSN table |
         | **Country of Origin** | `India` |
