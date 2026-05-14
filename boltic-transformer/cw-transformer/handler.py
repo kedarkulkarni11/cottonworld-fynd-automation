@@ -318,6 +318,34 @@ def clean_val(val: Any) -> str:
     return s
 
 
+def format_packed_date(val: Any) -> str:
+    """Force Packed Date to text in mm-yyyy format (e.g. '10-2023').
+
+    The raw xlsx parser surfaces Excel date cells as serial numbers
+    (days since 1899-12-30). Convert those to mm-yyyy. If the cell is
+    already a string in mm-yyyy form, normalise it; otherwise pass
+    through cleaned text.
+    """
+    if _is_empty(val):
+        return ""
+    # Excel serial date number -> mm-yyyy
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        try:
+            from datetime import datetime, timedelta
+            base = datetime(1899, 12, 30)
+            dt = base + timedelta(days=float(val))
+            return dt.strftime("%m-%Y")
+        except Exception:
+            pass
+    s = clean_val(val)
+    if not s:
+        return ""
+    m = re.fullmatch(r"(\d{1,2})-(\d{4})", s)
+    if m:
+        return f"{int(m.group(1)):02d}-{m.group(2)}"
+    return s
+
+
 def strip_percentages(composition: str) -> str:
     if not composition:
         return ""
@@ -550,7 +578,7 @@ def transform(data: bytes) -> tuple[bytes, list[str]]:
         leg          = clean_val(get(first, col_leg))
         front        = clean_val(get(first, col_front))
         composition1 = clean_val(get(first, col_comp1))
-        packed_date  = clean_val(get(first, col_packed_date))
+        packed_date  = format_packed_date(get(first, col_packed_date))
         cs           = clean_val(get(first, col_cs))
         rate         = clean_val(get(first, col_rate))
         order_no     = clean_val(get(first, col_order_no))

@@ -229,6 +229,30 @@ def clean_barcode(raw: str) -> str:
         return val
 
 
+def format_packed_date(raw: Any) -> str:
+    """Force Packed Date to text in mm-yyyy format (e.g. '10-2023')."""
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return ""
+    # If pandas read it as a datetime/Timestamp, format directly.
+    if isinstance(raw, pd.Timestamp):
+        if pd.isna(raw):
+            return ""
+        return raw.strftime("%m-%Y")
+    # Try generic datetime parse — covers datetime.date/datetime and stray strings.
+    try:
+        dt = pd.to_datetime(raw, errors="coerce", dayfirst=False)
+        if pd.notna(dt):
+            return dt.strftime("%m-%Y")
+    except Exception:
+        pass
+    # Fallback: trust the string value if already in mm-yyyy/m-yyyy form.
+    val = clean_val(raw)
+    if re.fullmatch(r"\d{1,2}-\d{4}", val):
+        m, y = val.split("-")
+        return f"{int(m):02d}-{y}"
+    return val
+
+
 # ---------------------------------------------------------------------------
 # Column discovery (Logic column names vary in case/spacing)
 # ---------------------------------------------------------------------------
@@ -360,7 +384,7 @@ def transform(input_file) -> tuple[BytesIO, list[str], pd.DataFrame]:
         leg = clean_val(first.get(col_leg, "")) if col_leg else ""
         front = clean_val(first.get(col_front, "")) if col_front else ""
         composition1 = clean_val(first.get(col_comp1, "")) if col_comp1 else ""
-        packed_date = clean_val(first.get(col_packed_date, "")) if col_packed_date else ""
+        packed_date = format_packed_date(first.get(col_packed_date, "")) if col_packed_date else ""
         cs = clean_val(first.get(col_cs, "")) if col_cs else ""
         rate = clean_val(first.get(col_rate, "")) if col_rate else ""
         order_no = clean_val(first.get(col_order_no, "")) if col_order_no else ""
