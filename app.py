@@ -38,10 +38,11 @@ def converter_page():
 
     st.divider()
 
+    st.caption("📎 Maximum file size: **10 MB**")
     uploaded_file = st.file_uploader(
         "Upload Logic ERP Item Master (.xlsx)",
         type=["xlsx"],
-        help="This is the Item Master export from Logic ERP (PO file).",
+        help="This is the Item Master export from Logic ERP (PO file). Max size: 10 MB.",
     )
 
     if uploaded_file is not None:

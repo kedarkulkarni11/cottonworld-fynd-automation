@@ -8,6 +8,10 @@ services:
     envVars:
       - key: STREAMLIT_SERVER_HEADLESS
         value: "true"
+      # Cap uploads at 10 MB to stay within Render free-tier RAM
+      # (xlsx parsing balloons ~10-20x in memory).
+      - key: STREAMLIT_SERVER_MAX_UPLOAD_SIZE
+        value: "10"
 
   # Fynd private-extension shim — handles OAuth, iframes the Streamlit app
   - type: web

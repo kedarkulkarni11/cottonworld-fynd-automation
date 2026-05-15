@@ -121,7 +121,7 @@
   <div class="drop-zone" id="dropZone">
     <div class="drop-icon">📂</div>
     <div class="drop-label">Drag &amp; drop Logic ERP Item Master (.xlsx)</div>
-    <div class="drop-sub">or click to browse · max 50 MB</div>
+    <div class="drop-sub">or click to browse · max 10 MB</div>
     <div class="drop-filename" id="dropFilename"></div>
   </div>
   <input type="file" id="fileInput" accept=".xlsx" />
@@ -173,6 +173,8 @@
   const previewSec = document.getElementById('previewSection');
   const previewNote = document.getElementById('previewNote');
 
+  const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+
   let selectedFile = null;
   let outputBlob   = null;
 
@@ -188,6 +190,12 @@
 
   function handleFile(file) {
     if (!file || !file.name.endsWith('.xlsx')) { alert('Please select a .xlsx file.'); return; }
+    if (file.size > MAX_FILE_BYTES) {
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+      alert(`File is too large (${sizeMb} MB). Maximum allowed size is 10 MB.`);
+      fileInput.value = '';
+      return;
+    }
     selectedFile = file;
     dropFilename.textContent = '📄 ' + file.name;
     dropZone.classList.add('has-file');
