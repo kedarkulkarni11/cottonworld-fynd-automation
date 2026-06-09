@@ -14,5 +14,7 @@
   "trader_address": "GALA-F, SIDHWA ESTATE, OLD BMP BUILDING, N.A. SAWANT MARG, Colaba, Mumbai City, Maharashtra, 400005",
   "return_time_limit": 30,
   "return_time_unit": "Days",
+  "net_quantity_value": 1,
+  "net_quantity_unit": "number",
   "collection": "CWC"
 }

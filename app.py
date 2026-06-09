@@ -59,11 +59,12 @@ def converter_page():
         if st.button("Convert to Fynd Template", type="primary"):
             with st.spinner("Transforming data..."):
                 try:
-                    output_buf, warnings, output_df = transform(uploaded_file)
+                    output_buf, warnings, output_df, cleanup_df = transform(uploaded_file)
                     st.session_state["conv_result"] = {
                         "buf_bytes": output_buf.getvalue(),
                         "warnings": warnings,
                         "df": output_df,
+                        "cleanup_df": cleanup_df,
                         "source_name": uploaded_file.name,
                     }
                 except ValueError as e:
@@ -80,6 +81,7 @@ def converter_page():
             result = st.session_state["conv_result"]
             output_df = result["df"]
             warnings = result["warnings"]
+            cleanup_df = result.get("cleanup_df")
 
             st.success("Conversion complete!")
 
@@ -87,10 +89,12 @@ def converter_page():
             total_rows = len(output_df)
             product_rows = output_df["Name"].astype(str).str.strip()
             num_products = (product_rows != "").sum()
-            col1, col2, col3 = st.columns(3)
+            cleanup_count = 0 if cleanup_df is None else len(cleanup_df)
+            col1, col2, col3, col4 = st.columns(4)
             col1.metric("Total rows (SKUs)", f"{total_rows}")
             col2.metric("Unique products", f"{num_products}")
             col3.metric("Warnings", f"{len(warnings)}")
+            col4.metric("Cleanups logged", f"{cleanup_count}")
 
             # ---- Preview table ----
             st.divider()
@@ -162,8 +166,36 @@ def converter_page():
                     for w in warnings:
                         st.markdown(f"- {w}")
 
+            # ---- Cleanup audit log ----
+            if cleanup_df is not None and len(cleanup_df) > 0:
+                st.divider()
+                st.info(
+                    f"**{len(cleanup_df)} cell(s) cleaned up during conversion.** "
+                    "These are minor mutations (whitespace trims, Excel `.0` "
+                    "float artifacts on numeric IDs) — semantic values were "
+                    "not changed. Review the table below or download as CSV "
+                    "for your records."
+                )
+                with st.expander("View cleanup log", expanded=False):
+                    st.dataframe(
+                        cleanup_df.astype(str),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                cleanup_csv = cleanup_df.to_csv(index=False).encode("utf-8")
+                cleanup_filename = (
+                    result["source_name"].replace(".xlsx", "")
+                    + "_cleanup_log.csv"
+                )
+                st.download_button(
+                    label="Download cleanup log (CSV)",
+                    data=cleanup_csv,
+                    file_name=cleanup_filename,
+                    mime="text/csv",
+                )
+
     st.divider()
-    st.caption("Cottonworld Automation Tool v2.1 | All sections & departments")
+    st.caption("Cottonworld Automation Tool v3.0 | Pass-through mode (Name + Item Code derived only)")
 
 
 # ---------------------------------------------------------------------------
@@ -206,21 +238,27 @@ def how_to_use_page():
         """
     )
 
-    st.header("Step 3 — Review the warnings")
+    st.header("Step 3 — Review warnings and the cleanup log")
     st.markdown(
         """
-        After conversion, the tool may show a list of warnings such as:
+        After conversion, the tool surfaces two things to review:
 
-        - **Unknown sleeve type / neck-collar** — Logic has a new abbreviation
-          the tool doesn't recognise yet. The value is passed through as-is, so
-          just check whether it's acceptable on Fynd.
+        **Warnings** (only fired when something needs your attention):
         - **No HSN mapping for (Section, Department)** — the tool doesn't have
           an HS Code for that combination. The HS Code field will be **blank**
           — fill it in manually before upload, and flag it so we can add the
           mapping permanently.
 
-        Warnings are **advisory** — the file is still generated. Treat them as
-        a checklist of things to manually verify.
+        **Cleanup log** (always shown when any cell was touched):
+        - The tool only ever makes two mutations: (a) trimming leading/trailing
+          whitespace, and (b) stripping the trailing `.0` Excel adds to
+          integer ID columns (Style No, Fabric No., OEM Barcode, Order No).
+        - Every such mutation is logged with the **Logic Excel row number,
+          column name, original value, cleaned value, and reason**.
+        - You can download the cleanup log as a CSV for your records.
+
+        Both are **advisory** — the file is still generated. Treat them as a
+        checklist of things to spot-check.
         """
     )
 
@@ -231,13 +269,16 @@ def how_to_use_page():
         2. Open the file in Excel or Google Sheets.
         3. Spot-check at least **5–10 products** across different sections and
            departments:
-           - **Name** reads like *Men's Cotton Regular Fit T-shirt Black*
-           - **Item Code** format: `M-TSHIRT-17656-21646-BLACK`
+           - **Name** reads like *MENS TSHIRT REGULAR FIT BLACK* (raw, all
+             caps from Logic, `(NIL)` segments skipped)
+           - **Item Code** format: `M-TSHIRT-17656-21646-BLACK` (first letter
+             of Section, then Dept-Style-Fabric-Color verbatim from Logic)
            - **HS Code** is 8 digits and matches the expected tariff code
-           - **Actual Price / Selling Price** = Logic MRP
-           - **Size** is `S/M/L/XL/XXL` (short forms)
-           - **Colour / Material** filled in
-           - **Custom Attribute 1** = Department (e.g. T-shirt, Shirt, Pant)
+           - **Actual Price / Selling Price** = Logic MRP (e.g. `499.00`,
+             `499.50` — 2-decimal preserved)
+           - **Size** is whatever Logic put in `PACK / SIZE`, verbatim
+           - **Colour / Material** = Logic `COLOR` / `COMPOSITION1`, verbatim
+           - **Custom Attribute 1** = Logic `DEPARTMENT`, verbatim
         4. If anything looks off, re-export from Logic and re-run — or fix in
            Excel directly.
         """
@@ -262,8 +303,8 @@ def how_to_use_page():
         """
         | Field | Rule |
         | --- | --- |
-        | **Product Name** | `Gender's Composition Fit Department Color` — no percentages, no "Cottonworld" prefix |
-        | **Item Code** | `{SectionPrefix}-{Dept}-{StyleNo}-{FabricNo}-{Color}` — one code per product, shared across size variants |
+        | **Product Name** | `SECTION DEPARTMENT FIT COLOR` — raw verbatim from Logic, empty / `(NIL)` segments skipped (e.g. `MENS TSHIRT REGULAR FIT BLACK`) |
+        | **Item Code** | `{FirstLetterOfSection}-DEPT-STYLE-FABRIC-COLOR` (e.g. `M-TSHIRT-17656-21646-BLACK`). LADIES → `L`. One code per product, shared across size variants |
         | **Brand** | `cottonworld` (fixed) |
         | **Category** | `Others level 3` (fixed) |
         | **Tax Rule** | `Tiered Tax Rule – 5% & 18% (Eff. 22 Sep 2025) (2)` |
@@ -272,10 +313,11 @@ def how_to_use_page():
         | **Dimensions** | 1 × 1 × 1 cm, 200 g (placeholder — update in Fynd if needed) |
         | **Trader / Marketer** | Lekhraj Corp Pvt Ltd (Colaba) |
         | **Return policy** | 30 Days |
-        | **Sleeve / Collar** | Abbreviations expanded (FS → Full Sleeves, HS → Half Sleeves, etc.) |
-        | **Size** | Standardized (SMALL → S, MEDIUM → M, XLARGE → XL) |
-        | **Gender** | `Ladies` → `Women` |
-        | **Custom Attributes 1–29** | Mapped from Logic columns per the approved mapping doc |
+        | **Net Quantity** | 1, unit `number` (fixed) |
+        | **Prices (MRP / RATE)** | Pass-through, 2-decimal preserved (`499.00`, `499.50`) |
+        | **Numeric IDs (Style No, Fabric No., Order No, OEM Barcode)** | Pass-through; trailing `.0` from Excel stripped and logged |
+        | **All other fields** (Size, Colour, Material, Fit, Custom Attrs, Sleeve, Collar, etc.) | **Pass-through verbatim from Logic** — no title casing, no mapping, no blanking of `(NIL)` |
+        | **Cleanup log** | Every whitespace trim / `.0` strip is logged with row + column + reason, exportable as CSV |
         """
     )
 
@@ -298,9 +340,16 @@ def how_to_use_page():
           to add it — one line in `data/hsn_lookup.csv`.
         - As a one-off, fill the HS Code manually in the downloaded file.
 
-        **A sleeve / collar value isn't expanding**
-        - Same cause — new abbreviation not yet in the mapping file.
-        - Manually correct in the output file, and report so it can be added.
+        **A field value looks "ugly" (all caps, weird spacing, `(NIL)`)**
+        - That is by design — the tool now passes Logic values through verbatim
+          so what you see on Fynd matches what's in Logic. If a value needs
+          to be cleaned up, fix it at source in Logic (or fix in the output
+          file before upload).
+
+        **Cleanup log has lots of entries**
+        - The tool only ever trims whitespace or strips Excel's `.0` artifact
+          on integer ID columns. These are safe, mechanical cleanups — review
+          them if you want, but no action is required.
         """
     )
 

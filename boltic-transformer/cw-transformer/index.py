@@ -15,7 +15,7 @@ def handler(request):
 
     # Health check
     if request.method == "GET":
-        res = jsonify({"status": "ok"})
+        res = jsonify({"status": "ok", "version": "cw-transformer-v3"})
         res.headers["Access-Control-Allow-Origin"] = "*"
         return res
 

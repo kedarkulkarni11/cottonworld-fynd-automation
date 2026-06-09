@@ -1,6 +1,6 @@
 app: "cw-transformer"
 region: "asia-south1"
-handler: "index.handler"
+handler: "handler.handler"
 language: "python/3"
 
 serverlessConfig:
