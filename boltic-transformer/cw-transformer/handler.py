@@ -15,16 +15,24 @@ Per the June 2026 client spec ("as-is" rules):
 """
 from __future__ import annotations
 
+import base64
 import csv
+import hashlib
+import hmac
 import io
+import json
 import math
+import os
 import re
+import time
+import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 from io import BytesIO, StringIO
 from typing import Any
 
-from flask import jsonify, make_response
+from flask import jsonify, make_response, redirect
 
 # ---------------------------------------------------------------------------
 # Reference data (all inlined)
@@ -1038,26 +1046,414 @@ def transform_shopify(data: bytes) -> tuple[bytes, list[str], list[list]]:
 
 
 # ---------------------------------------------------------------------------
-# Boltic handler
+# Fynd private-extension OAuth handshake (stateless)
+#
+# This Boltic function doubles as a self-contained Fynd private extension:
+# it serves its own HTML UI and handles the Fynd install/auth OAuth handshake
+# so it can be installed on a company without the separate Render-hosted Node
+# shim. Because the tool makes ZERO Fynd Platform API calls, the access token
+# is never persisted -- the handshake is completed and the token discarded, so
+# no session storage / database is required.
 # ---------------------------------------------------------------------------
 
-def handler(request):
-    if request.method == "OPTIONS":
-        res = make_response("", 204)
-        res.headers["Access-Control-Allow-Origin"] = "*"
-        res.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
-        res.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        res.headers["Access-Control-Expose-Headers"] = "X-Warnings, X-Cleanup-Count, Content-Disposition"
-        return res
+HANDLER_VERSION = "cw-transformer-v6"
 
-    if request.method == "GET":
-        res = jsonify({"status": "ok", "version": "cw-transformer-v5"})
-        res.headers["Access-Control-Allow-Origin"] = "*"
-        return res
+_STATE_COOKIE = "cw_oauth_state"
+_STATE_MAX_AGE = 600  # seconds the signed install state stays valid
 
-    if request.method != "POST":
-        return jsonify({"detail": "Method not allowed"}), 405
 
+def _ext_config() -> dict:
+    return {
+        "api_key": os.environ.get("EXTENSION_API_KEY", ""),
+        "api_secret": os.environ.get("EXTENSION_API_SECRET", ""),
+        "base_url": os.environ.get("EXTENSION_BASE_URL", "").rstrip("/"),
+        "cluster": os.environ.get("FP_API_DOMAIN", "https://api.fynd.com").rstrip("/"),
+        # Comma/space separated extension scopes, as configured in the Partner panel.
+        "scope": os.environ.get("EXTENSION_SCOPE", ""),
+    }
+
+
+def _sign_state(payload: dict, secret: str) -> str:
+    """HMAC-sign a small JSON payload into a tamper-proof cookie value."""
+    raw = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    sig = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()
+    return f"{raw}.{sig}"
+
+
+def _verify_state(token: str, secret: str):
+    """Return the payload if the signed state is valid and unexpired, else None."""
+    try:
+        raw, sig = token.rsplit(".", 1)
+    except ValueError:
+        return None
+    expected = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None
+    pad = "=" * (-len(raw) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(raw + pad).decode())
+    except Exception:
+        return None
+    if time.time() - payload.get("ts", 0) > _STATE_MAX_AGE:
+        return None
+    return payload
+
+
+def _fp_install(request):
+    """OAuth start: sign install state into a cookie, redirect to Fynd authorize."""
+    cfg = _ext_config()
+    if not (cfg["api_key"] and cfg["api_secret"] and cfg["base_url"]):
+        return jsonify({"detail": "Extension not configured (set EXTENSION_API_KEY / "
+                                  "EXTENSION_API_SECRET / EXTENSION_BASE_URL)."}), 500
+
+    company_id = request.args.get("company_id", "")
+    if not company_id:
+        return jsonify({"detail": "Missing company_id"}), 400
+    cluster = (request.args.get("cluster") or cfg["cluster"]).rstrip("/")
+
+    state = base64.urlsafe_b64encode(os.urandom(16)).decode().rstrip("=")
+    signed = _sign_state(
+        {"s": state, "c": company_id, "cl": cluster, "ts": int(time.time())},
+        cfg["api_secret"],
+    )
+
+    authorize_url = (
+        f"{cluster}/service/panel/authentication/v1.0/company/{company_id}/oauth/authorize?"
+        + urllib.parse.urlencode({
+            "client_id": cfg["api_key"],
+            "scope": cfg["scope"],
+            "redirect_uri": f"{cfg['base_url']}/fp/auth",
+            "state": state,
+            "response_type": "code",
+            "access_mode": "online",
+        })
+    )
+    resp = make_response(redirect(authorize_url, code=302))
+    resp.set_cookie(_STATE_COOKIE, signed, max_age=_STATE_MAX_AGE,
+                    httponly=True, secure=True, samesite="Lax")
+    return resp
+
+
+def _fp_auth(request):
+    """OAuth callback: verify state, exchange code for a token, discard it, land on UI."""
+    cfg = _ext_config()
+    code = request.args.get("code", "")
+    returned_state = request.args.get("state", "")
+    cookie = request.cookies.get(_STATE_COOKIE, "")
+    payload = _verify_state(cookie, cfg["api_secret"]) if cookie else None
+
+    if not payload or not code:
+        return jsonify({"detail": "OAuth state validation failed."}), 400
+    if returned_state and payload.get("s") != returned_state:
+        return jsonify({"detail": "OAuth state mismatch."}), 400
+
+    company_id = request.args.get("company_id", "") or payload.get("c", "")
+    cluster = (payload.get("cl") or cfg["cluster"]).rstrip("/")
+
+    token_url = (
+        f"{cluster}/service/panel/authentication/v1.0/company/{company_id}/oauth/token"
+    )
+    body = urllib.parse.urlencode({
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": cfg["api_key"],
+        "client_secret": cfg["api_secret"],
+        "redirect_uri": f"{cfg['base_url']}/fp/auth",
+    }).encode()
+    basic = base64.b64encode(f"{cfg['api_key']}:{cfg['api_secret']}".encode()).decode()
+    req = urllib.request.Request(token_url, data=body, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    req.add_header("Authorization", f"Basic {basic}")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            r.read()  # token obtained then intentionally discarded -- no API calls made
+    except Exception as e:  # noqa: BLE001 - surface any handshake failure to the installer
+        return jsonify({"detail": f"Token exchange failed: {e}"}), 502
+
+    landing = f"{cfg['base_url']}/?company_id={urllib.parse.quote(company_id)}"
+    resp = make_response(redirect(landing, code=302))
+    resp.set_cookie(_STATE_COOKIE, "", max_age=0)  # clear the one-shot state cookie
+    return resp
+
+
+def _fp_uninstall(request):
+    # Stateless tool -- nothing persistent to clean up.
+    return jsonify({"success": True}), 200
+
+
+# ---------------------------------------------------------------------------
+# Static UI (served at GET / -- replaces the Render Streamlit app)
+# ---------------------------------------------------------------------------
+
+INDEX_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cottonworld – Logic ERP Catalog Transformer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f7fa; color: #1a1a2e; min-height: 100vh; padding: 24px 16px; }
+    .container { max-width: 900px; margin: 0 auto; }
+    h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+    .subtitle { font-size: 13px; color: #6b7280; margin-bottom: 20px; line-height: 1.5; }
+    .disclaimer { background: #fffbeb; border: 1px solid #f59e0b; border-radius: 8px; padding: 12px 16px; font-size: 13px; color: #92400e; margin-bottom: 20px; line-height: 1.5; }
+    .disclaimer strong { font-weight: 600; }
+    .toggle-row { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+    .toggle-label { font-size: 13px; font-weight: 600; color: #374151; }
+    .seg { display: inline-flex; border: 1px solid #d1d5db; border-radius: 8px; overflow: hidden; }
+    .seg button { padding: 8px 18px; font-size: 13px; font-weight: 600; background: #fff; border: none; cursor: pointer; color: #374151; }
+    .seg button.active { background: #2563eb; color: #fff; }
+    .drop-zone { border: 2px dashed #d1d5db; border-radius: 10px; background: #fff; padding: 36px 24px; text-align: center; cursor: pointer; transition: border-color .2s, background .2s; margin-bottom: 16px; }
+    .drop-zone:hover, .drop-zone.drag-over { border-color: #2563eb; background: #eff6ff; }
+    .drop-zone.has-file { border-color: #10b981; background: #ecfdf5; }
+    .drop-icon { font-size: 36px; margin-bottom: 8px; }
+    .drop-label { font-size: 15px; font-weight: 500; color: #374151; }
+    .drop-sub { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+    .drop-filename { font-size: 13px; color: #10b981; font-weight: 600; margin-top: 8px; }
+    input[type="file"] { display: none; }
+    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; transition: opacity .15s; }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #1d4ed8; }
+    .btn-success { background: #10b981; color: #fff; }
+    .btn-success:hover { background: #059669; }
+    .action-row { display: flex; gap: 10px; margin-bottom: 20px; }
+    .status { display: none; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; }
+    .status.loading { display: flex; background: #eff6ff; color: #1d4ed8; }
+    .status.error { display: flex; background: #fef2f2; color: #991b1b; }
+    .spinner { width: 18px; height: 18px; border: 3px solid #bfdbfe; border-top-color: #2563eb; border-radius: 50%; animation: spin .7s linear infinite; flex-shrink: 0; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .warnings { display: none; background: #fff7ed; border: 1px solid #fb923c; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px; color: #7c2d12; }
+    .warnings.visible { display: block; }
+    .warnings h3 { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+    .warnings ul { padding-left: 18px; }
+    .warnings li { margin-bottom: 3px; line-height: 1.4; }
+    .result-bar { display: none; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; background: #ecfdf5; border: 1px solid #10b981; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; }
+    .result-bar.visible { display: flex; }
+    .result-info { font-size: 13px; color: #065f46; font-weight: 500; }
+    .preview-section { display: none; margin-bottom: 24px; }
+    .preview-section.visible { display: block; }
+    .preview-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .preview-header h3 { font-size: 14px; font-weight: 700; color: #374151; }
+    .preview-header span { font-size: 12px; color: #6b7280; }
+    .table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid #e5e7eb; background: #fff; max-height: 420px; overflow-y: auto; }
+    table { border-collapse: collapse; min-width: 100%; font-size: 12px; }
+    th { background: #f9fafb; padding: 8px 12px; text-align: left; font-weight: 600; color: #374151; white-space: nowrap; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; z-index: 1; }
+    td { padding: 7px 12px; border-bottom: 1px solid #f3f4f6; white-space: nowrap; max-width: 200px; overflow: hidden; text-overflow: ellipsis; color: #4b5563; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #f9fafb; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>Cottonworld – Logic ERP Catalog Transformer</h1>
+  <p class="subtitle">Upload the Logic ERP Item Master export and download a ready-to-import catalog file. Choose the target platform below.</p>
+
+  <div class="disclaimer">⚠️ <strong>Always review the generated file before uploading.</strong> This tool automates the mapping but does not guarantee correctness for every row — open the output and spot-check names, prices, and any flagged warnings before bulk upload.</div>
+
+  <div class="toggle-row">
+    <span class="toggle-label">Target platform</span>
+    <div class="seg" id="seg">
+      <button data-target="fynd" class="active">Fynd</button>
+      <button data-target="shopify">Shopify</button>
+    </div>
+  </div>
+
+  <div class="drop-zone" id="dropZone">
+    <div class="drop-icon">📂</div>
+    <div class="drop-label">Drag &amp; drop Logic ERP Item Master (.xlsx)</div>
+    <div class="drop-sub">or click to browse · max 10 MB</div>
+    <div class="drop-filename" id="dropFilename"></div>
+  </div>
+  <input type="file" id="fileInput" accept=".xlsx" />
+
+  <div class="action-row">
+    <button class="btn btn-primary" id="convertBtn" disabled>⚙️ Convert to Fynd template</button>
+  </div>
+
+  <div class="status" id="status"><div class="spinner"></div><span id="statusText">Transforming file… this may take a few seconds.</span></div>
+
+  <div class="warnings" id="warnings"><h3>⚠️ Warnings — review these rows before uploading</h3><ul id="warningList"></ul></div>
+
+  <div class="result-bar" id="resultBar"><span class="result-info" id="resultInfo"></span><button class="btn btn-success" id="downloadBtn">⬇ Download output</button></div>
+
+  <div class="preview-section" id="previewSection">
+    <div class="preview-header"><h3>Preview (first 20 rows)</h3><span id="previewNote"></span></div>
+    <div class="table-wrap"><table id="previewTable"></table></div>
+  </div>
+</div>
+
+<script>
+  const TRANSFORMER_URL = '';            // same origin -- POST to /transform
+  const MAX_FILE_BYTES = 10 * 1024 * 1024;
+  const TARGETS = {
+    fynd:    { btn: '⚙️ Convert to Fynd template', file: 'fynd_catalog_output.xlsx', kind: 'xlsx' },
+    shopify: { btn: '⚙️ Convert to Shopify CSV',   file: 'shopify_import.csv',      kind: 'csv'  },
+  };
+
+  let target = 'fynd';
+  let selectedFile = null;
+  let outputBlob = null;
+
+  const seg = document.getElementById('seg');
+  const dropZone = document.getElementById('dropZone');
+  const fileInput = document.getElementById('fileInput');
+  const dropFilename = document.getElementById('dropFilename');
+  const convertBtn = document.getElementById('convertBtn');
+  const statusEl = document.getElementById('status');
+  const statusText = document.getElementById('statusText');
+  const warningsEl = document.getElementById('warnings');
+  const warningList = document.getElementById('warningList');
+  const resultBar = document.getElementById('resultBar');
+  const resultInfo = document.getElementById('resultInfo');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const previewSec = document.getElementById('previewSection');
+  const previewNote = document.getElementById('previewNote');
+
+  seg.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    target = b.dataset.target;
+    [...seg.children].forEach(c => c.classList.toggle('active', c === b));
+    convertBtn.textContent = TARGETS[target].btn;
+    resetResults();
+  });
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); handleFile(e.dataTransfer.files[0]); });
+
+  function handleFile(file) {
+    if (!file || !file.name.endsWith('.xlsx')) { alert('Please select a .xlsx file.'); return; }
+    if (file.size > MAX_FILE_BYTES) { alert('File is too large (' + (file.size/1048576).toFixed(1) + ' MB). Max 10 MB.'); fileInput.value = ''; return; }
+    selectedFile = file;
+    dropFilename.textContent = '📄 ' + file.name;
+    dropZone.classList.add('has-file');
+    convertBtn.disabled = false;
+    resetResults();
+  }
+
+  function resetResults() {
+    outputBlob = null;
+    statusEl.className = 'status';
+    warningsEl.className = 'warnings';
+    warningList.innerHTML = '';
+    resultBar.className = 'result-bar';
+    previewSec.className = 'preview-section';
+    document.getElementById('previewTable').innerHTML = '';
+  }
+
+  convertBtn.addEventListener('click', async () => {
+    if (!selectedFile) return;
+    resetResults();
+    convertBtn.disabled = true;
+    statusEl.className = 'status loading';
+    statusText.textContent = 'Transforming file… this may take a few seconds.';
+
+    const form = new FormData();
+    form.append('file', selectedFile);
+    form.append('target', target);
+
+    try {
+      const res = await fetch(TRANSFORMER_URL + '/transform', { method: 'POST', body: form });
+      const warningsHeader = res.headers.get('X-Warnings') || '';
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'HTTP ' + res.status }));
+        throw new Error(err.detail || ('HTTP ' + res.status));
+      }
+      outputBlob = await res.blob();
+      statusEl.className = 'status';
+
+      const warningItems = warningsHeader.split('||').map(w => w.trim()).filter(Boolean);
+      if (warningItems.length) {
+        warningList.innerHTML = warningItems.map(w => '<li>' + esc(w) + '</li>').join('');
+        warningsEl.className = 'warnings visible';
+      }
+
+      let rows;
+      if (TARGETS[target].kind === 'csv') {
+        const text = await outputBlob.text();
+        const wb = XLSX.read(text, { type: 'string' });
+        rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+      } else {
+        const ab = await outputBlob.arrayBuffer();
+        const wb = XLSX.read(ab, { type: 'array' });
+        rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+      }
+      const totalRows = rows.length - 1;
+      resultInfo.textContent = '✅ Done — ' + totalRows + ' row' + (totalRows !== 1 ? 's' : '') + ' generated';
+      resultBar.className = 'result-bar visible';
+      buildTable(rows.slice(0, 21));
+      previewNote.textContent = 'Showing ' + Math.min(20, totalRows) + ' of ' + totalRows + ' rows';
+      previewSec.className = 'preview-section visible';
+    } catch (err) {
+      statusEl.className = 'status error';
+      statusText.textContent = '❌ ' + err.message;
+    } finally {
+      convertBtn.disabled = false;
+    }
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    if (!outputBlob) return;
+    const url = URL.createObjectURL(outputBlob);
+    const a = Object.assign(document.createElement('a'), { href: url, download: TARGETS[target].file });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  });
+
+  function buildTable(rows) {
+    const table = document.getElementById('previewTable');
+    table.innerHTML = '';
+    if (!rows.length) return;
+    const thead = document.createElement('thead');
+    const hrow = document.createElement('tr');
+    rows[0].forEach(c => { const th = document.createElement('th'); th.textContent = c; th.title = c; hrow.appendChild(th); });
+    thead.appendChild(hrow); table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    rows.slice(1).forEach(row => {
+      const tr = document.createElement('tr');
+      rows[0].forEach((_, i) => { const td = document.createElement('td'); const v = String(row[i] ?? ''); td.textContent = v; td.title = v; tr.appendChild(td); });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+  }
+
+  function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+</script>
+</body>
+</html>"""
+
+
+def _serve_ui():
+    resp = make_response(INDEX_HTML)
+    resp.headers["Content-Type"] = "text/html; charset=utf-8"
+    resp.headers["Content-Security-Policy"] = (
+        "frame-ancestors 'self' https://*.fynd.com https://*.fyndx0.com "
+        "https://*.fyndx1.com https://*.fyndx5.com;"
+    )
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# Boltic handler (path-routed)
+# ---------------------------------------------------------------------------
+
+def _cors_preflight():
+    res = make_response("", 204)
+    res.headers["Access-Control-Allow-Origin"] = "*"
+    res.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
+    res.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    res.headers["Access-Control-Expose-Headers"] = "X-Warnings, X-Cleanup-Count, Content-Disposition"
+    return res
+
+
+def _handle_transform(request):
     if "file" not in request.files:
         return jsonify({"detail": "No file uploaded. Send xlsx as field 'file'."}), 400
 
@@ -1096,3 +1492,40 @@ def handler(request):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Expose-Headers"] = "X-Warnings, X-Cleanup-Count, Content-Disposition"
     return response
+
+
+def handler(request):
+    method = request.method
+    path = (getattr(request, "path", "/") or "/").rstrip("/") or "/"
+
+    if method == "OPTIONS":
+        return _cors_preflight()
+
+    if path == "/healthz":
+        res = jsonify({"status": "ok", "version": HANDLER_VERSION})
+        res.headers["Access-Control-Allow-Origin"] = "*"
+        return res
+
+    # Fynd extension OAuth handshake
+    if path == "/fp/install" and method == "GET":
+        return _fp_install(request)
+    if path == "/fp/auth" and method == "GET":
+        return _fp_auth(request)
+    if path == "/fp/uninstall":
+        return _fp_uninstall(request)
+
+    # Transform API (accept at /transform and at base for backward compatibility)
+    if path in ("/transform", "/") and method == "POST":
+        return _handle_transform(request)
+
+    # UI
+    if path == "/" and method == "GET":
+        return _serve_ui()
+
+    # Any other GET -> version/health JSON (kept for existing callers/monitors)
+    if method == "GET":
+        res = jsonify({"status": "ok", "version": HANDLER_VERSION})
+        res.headers["Access-Control-Allow-Origin"] = "*"
+        return res
+
+    return jsonify({"detail": "Not found"}), 404

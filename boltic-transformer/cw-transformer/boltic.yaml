@@ -8,11 +8,22 @@ serverlessConfig:
   Name: "cw-transformer"
   Description: "Cottonworld Logic ERP to Fynd Catalog transformer"
   Runtime: "code"
-  Env: {}
+  # Fynd private-extension config. Set the SECRET values in the Boltic dashboard
+  # (do not commit real keys here). EXTENSION_BASE_URL must equal this function's
+  # public URL and match the Extension URL in the Fynd Partner panel exactly.
+  Env:
+    FP_API_DOMAIN: "https://api.fynd.com"
+    EXTENSION_SCOPE: ""
+    # EXTENSION_API_KEY:    <set in Boltic dashboard>
+    # EXTENSION_API_SECRET: <set in Boltic dashboard>
+    # EXTENSION_BASE_URL:   <set in Boltic dashboard, e.g. https://<fn>.boltic.app>
   PortMap: []
   Scaling:
     AutoStop: true
-    Min: 0
+    # Keep one warm instance so the short OAuth install handshake reliably hits
+    # the same instance (the signed-cookie state is stateless, but this avoids
+    # cold-start latency mid-install).
+    Min: 1
     Max: 5
     MaxIdleTime: 300
   Resources:
