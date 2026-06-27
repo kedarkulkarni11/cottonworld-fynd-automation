@@ -1,0 +1,18 @@
+{
+  "vendor": "Cottonworld",
+  "published": "0",
+  "option1_name": "Size",
+  "option1_linked_to": "product.metafields.shopify.size",
+  "option2_name": "color",
+  "option2_linked_to": "product.metafields.shopify.color-pattern",
+  "variant_grams": 200,
+  "variant_inventory_tracker": "Shopify",
+  "variant_inventory_policy": "Deny",
+  "variant_fulfillment_service": "Manual",
+  "variant_requires_shipping": "1",
+  "variant_taxable": "1",
+  "gift_card": "0",
+  "variant_weight_unit": "Kg",
+  "included_india": "1",
+  "status": "draft"
+}

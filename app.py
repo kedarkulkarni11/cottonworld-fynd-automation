@@ -5,33 +5,89 @@ Converts Logic ERP Item Master export → Fynd Platform upload template.
 
 import streamlit as st
 
-from transformer import transform
+from transformer import transform as transform_fynd
+from shopify_transformer import transform as transform_shopify
 
 st.set_page_config(
-    page_title="Cottonworld → Fynd Converter",
+    page_title="Cottonworld Catalog Converter",
     page_icon="👕",
     layout="centered",
 )
+
+
+# Per-platform UI config. Keeps converter_page() branch-free.
+PLATFORMS = {
+    "Fynd": {
+        "transform": transform_fynd,
+        "title_col": "Name",
+        "button": "Convert to Fynd Template",
+        "out_suffix": "_fynd_upload.xlsx",
+        "out_mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "download_label": "Download Fynd Upload File",
+        "key_cols": [
+            "Name", "Item Code", "Brand", "Category", "HS Code",
+            "Gtin Value", "Size", "Actual Price", "Currency",
+            "Colour", "Material",
+            "Custom Attribute 1", "Custom Attribute 2", "Custom Attribute 3",
+            "Custom Attribute 5", "Custom Attribute 7",
+            "Custom Attribute 14", "Custom Attribute 20",
+        ],
+    },
+    "Shopify": {
+        "transform": transform_shopify,
+        "title_col": "Title",
+        "button": "Convert to Shopify CSV",
+        "out_suffix": "_shopify_import.csv",
+        "out_mime": "text/csv",
+        "download_label": "Download Shopify Import CSV",
+        "key_cols": [
+            "Handle", "Title", "Vendor",
+            "Option1 Value", "Option2 Value", "Variant SKU", "Variant Price",
+            "Gender (product.metafields.custom.gender)",
+            "Product Type (product.metafields.custom.product_type)",
+            "Fit Type (product.metafields.custom.fit_type)",
+            "Fabric Composition (product.metafields.custom.fabric_composition)",
+            "Style Code (product.metafields.custom.style_code)",
+            "Status",
+        ],
+    },
+}
 
 
 # ---------------------------------------------------------------------------
 # Page: Converter
 # ---------------------------------------------------------------------------
 def converter_page():
-    st.title("Cottonworld → Fynd Platform Converter")
+    st.title("Cottonworld Catalog Converter")
     st.markdown(
         "Upload the **Logic ERP Item Master** `.xlsx` file to generate a "
-        "Fynd Commerce-ready upload file."
-    )
-    st.caption(
-        "All sections (Mens, Ladies, Boys, Unisex) and departments are supported. "
-        "HS Code is resolved from the Section + Department HSN lookup."
+        "marketplace-ready upload file."
     )
 
+    target = st.radio(
+        "Target platform",
+        list(PLATFORMS.keys()),
+        horizontal=True,
+        help="Fynd produces the Fynd Commerce bulk-upload .xlsx. "
+             "Shopify produces a Shopify product-import .csv.",
+    )
+    cfg = PLATFORMS[target]
+
+    if target == "Fynd":
+        st.caption(
+            "All sections (Mens, Ladies, Boys, Unisex) and departments are supported. "
+            "HS Code is resolved from the Section + Department HSN lookup."
+        )
+    else:
+        st.caption(
+            "Produces a Shopify product-import CSV. One product per "
+            "Style + Fabric + Color; sizes become variants."
+        )
+
     st.warning(
-        "⚠️ **Always review the generated file before uploading to Fynd Commerce Platform.** "
+        f"⚠️ **Always review the generated file before uploading to {target}.** "
         "This tool automates the mapping but does not guarantee correctness for every row — "
-        "open the output in Excel, spot-check names, HS codes, prices, and any flagged "
+        "open the output, spot-check titles, prices, and any flagged "
         "warnings below before bulk upload.",
         icon="⚠️",
     )
@@ -50,22 +106,23 @@ def converter_page():
             f"Uploaded: **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)"
         )
 
-        # Invalidate cached result if a new file is uploaded
-        current_key = f"{uploaded_file.name}::{uploaded_file.size}"
+        # Invalidate cached result if a new file OR a new target is selected
+        current_key = f"{target}::{uploaded_file.name}::{uploaded_file.size}"
         if st.session_state.get("conv_source_key") != current_key:
             st.session_state.pop("conv_result", None)
             st.session_state["conv_source_key"] = current_key
 
-        if st.button("Convert to Fynd Template", type="primary"):
+        if st.button(cfg["button"], type="primary"):
             with st.spinner("Transforming data..."):
                 try:
-                    output_buf, warnings, output_df, cleanup_df = transform(uploaded_file)
+                    output_buf, warnings, output_df, cleanup_df = cfg["transform"](uploaded_file)
                     st.session_state["conv_result"] = {
                         "buf_bytes": output_buf.getvalue(),
                         "warnings": warnings,
                         "df": output_df,
                         "cleanup_df": cleanup_df,
                         "source_name": uploaded_file.name,
+                        "target": target,
                     }
                 except ValueError as e:
                     st.session_state.pop("conv_result", None)
@@ -82,12 +139,13 @@ def converter_page():
             output_df = result["df"]
             warnings = result["warnings"]
             cleanup_df = result.get("cleanup_df")
+            result_cfg = PLATFORMS[result.get("target", "Fynd")]
 
             st.success("Conversion complete!")
 
             # ---- Summary metrics ----
             total_rows = len(output_df)
-            product_rows = output_df["Name"].astype(str).str.strip()
+            product_rows = output_df[result_cfg["title_col"]].astype(str).str.strip()
             num_products = (product_rows != "").sum()
             cleanup_count = 0 if cleanup_df is None else len(cleanup_df)
             col1, col2, col3, col4 = st.columns(4)
@@ -100,22 +158,12 @@ def converter_page():
             st.divider()
             st.subheader("Preview")
             st.caption(
-                "First 20 rows of the generated file. Toggle below to "
-                "see only key columns or the full template (102 columns)."
+                f"First 20 rows of the generated file. Toggle below to "
+                f"see only key columns or the full template "
+                f"({len(output_df.columns)} columns)."
             )
 
-            key_cols = [
-                "Name", "Item Code", "Brand", "Category", "HS Code",
-                "Gtin Value", "Size", "Actual Price", "Currency",
-                "Colour", "Material",
-                "Custom Attribute 1",  # Department
-                "Custom Attribute 2",  # Fit
-                "Custom Attribute 3",  # Gender
-                "Custom Attribute 5",  # Collar
-                "Custom Attribute 7",  # Sleeve
-                "Custom Attribute 14", # Style No
-                "Custom Attribute 20", # Fabric No
-            ]
+            key_cols = result_cfg["key_cols"]
             view = st.radio(
                 "View",
                 ["Key columns only", "All columns"],
@@ -140,20 +188,20 @@ def converter_page():
             st.divider()
             output_filename = (
                 result["source_name"].replace(".xlsx", "")
-                + "_fynd_upload.xlsx"
+                + result_cfg["out_suffix"]
             )
             st.download_button(
-                label="Download Fynd Upload File",
+                label=result_cfg["download_label"],
                 data=result["buf_bytes"],
                 file_name=output_filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                mime=result_cfg["out_mime"],
                 type="primary",
             )
 
             st.info(
-                "📌 **Before uploading to Fynd:** open the downloaded file, "
-                "verify a few product rows (Name, HS Code, Price, Custom Attributes), "
-                "and review any warnings listed below."
+                f"📌 **Before uploading to {result.get('target', 'Fynd')}:** open the "
+                "downloaded file, verify a few product rows (Title/Name, Price, key "
+                "attributes), and review any warnings listed below."
             )
 
             if warnings:
@@ -195,7 +243,7 @@ def converter_page():
                 )
 
     st.divider()
-    st.caption("Cottonworld Automation Tool v3.0 | Pass-through mode (Name + Item Code derived only)")
+    st.caption("Cottonworld Catalog Converter v4.0 | Fynd + Shopify | Pass-through mode (Name/Title derived only)")
 
 
 # ---------------------------------------------------------------------------
@@ -206,12 +254,21 @@ def how_to_use_page():
     st.caption("A step-by-step guide for the Cottonworld team.")
 
     st.warning(
-        "⚠️ **Disclaimer:** This tool automates the Logic → Fynd mapping, but "
-        "you must **always verify the output file before uploading to the Fynd "
-        "Commerce Platform**. Open the file in Excel, check product names, HS "
-        "codes, MRP, and any flagged warnings. The tool is an accelerator, not "
-        "a substitute for a final human review.",
+        "⚠️ **Disclaimer:** This tool automates the Logic → Fynd **and** "
+        "Logic → Shopify mappings, but you must **always verify the output file "
+        "before uploading**. Open the file in Excel, check product names/titles, "
+        "HS codes (Fynd), MRP, and any flagged warnings. The tool is an "
+        "accelerator, not a substitute for a final human review.",
         icon="⚠️",
+    )
+
+    st.info(
+        "🎯 **Pick a target platform first.** On the **Converter** page, use the "
+        "**Target platform** toggle to choose **Fynd** (multi-sheet `.xlsx`) or "
+        "**Shopify** (product-import `.csv`). The Logic export and review steps "
+        "below are the same for both — only the output format and the upload "
+        "destination differ.",
+        icon="🎯",
     )
 
     st.divider()
@@ -232,9 +289,10 @@ def how_to_use_page():
     st.markdown(
         """
         1. Open the **Converter** page (left sidebar).
-        2. Click **Browse files** and select the Logic `.xlsx` you exported.
-        3. Click **Convert to Fynd Template**.
-        4. Wait a few seconds while the tool processes the file.
+        2. Choose your **Target platform** — **Fynd** or **Shopify**.
+        3. Click **Browse files** and select the Logic `.xlsx` you exported.
+        4. Click **Convert to Fynd Template** / **Convert to Shopify CSV**.
+        5. Wait a few seconds while the tool processes the file.
         """
     )
 
@@ -350,6 +408,32 @@ def how_to_use_page():
         - The tool only ever trims whitespace or strips Excel's `.0` artifact
           on integer ID columns. These are safe, mechanical cleanups — review
           them if you want, but no action is required.
+        """
+    )
+
+    st.divider()
+    st.header("Shopify flow (Logic → Shopify)")
+    st.markdown(
+        """
+        Switch the **Target platform** toggle to **Shopify** to produce a
+        Shopify **product-import `.csv`** instead of the Fynd `.xlsx`. The Logic
+        export (Step 1) and the review habits (Steps 3–4) are identical — only
+        these differ:
+
+        - **Output:** a single `.csv` (Shopify's native import format), not a
+          multi-sheet workbook. There is **no HS Code lookup** on this path.
+        - **Grouping:** size variants are grouped into one product via a shared
+          **`Handle`**; product-level fields (Title, metafields) are written on
+          the first variant row, variant-level fields (Option values, SKU,
+          Barcode, Price) on every row.
+        - **What's derived:** `Title` and the `Style Code` metafield use the
+          same `SECTION DEPARTMENT FIT COLOR` concatenation as the Fynd Name.
+          Everything else is pass-through or a fixed Shopify default
+          (`Vendor=Cottonworld`, `Status=draft`, option linkage to Shopify
+          size/colour metafields, etc.).
+        - **Upload:** in Shopify admin go to **Products → Import**, choose the
+          downloaded `.csv`, and review Shopify's import preview before
+          confirming. Products land as **draft** — publish after a spot-check.
         """
     )
 
