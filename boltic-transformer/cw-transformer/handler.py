@@ -50,7 +50,7 @@ STATIC = {
     "trader_name": "Lekhraj Corp Pvt Ltd",
     "trader_address": "GALA-F, SIDHWA ESTATE, OLD BMP BUILDING, N.A. SAWANT MARG, Colaba, Mumbai City, Maharashtra, 400005",
     "return_time_limit": 30, "return_time_unit": "Days",
-    "net_quantity_value": 1, "net_quantity_unit": "number",
+    "net_quantity_value": 1, "net_quantity_unit": "nos",
     "collection": "CWC",
 }
 
@@ -146,7 +146,7 @@ CLEANUP_COLUMNS = [
 
 SHOPIFY_STATIC = {
     "vendor": "Cottonworld",
-    "published": "0",
+    "published": "FALSE",
     "option1_name": "Size",
     "option1_linked_to": "product.metafields.shopify.size",
     "option2_name": "color",
@@ -155,11 +155,11 @@ SHOPIFY_STATIC = {
     "variant_inventory_tracker": "Shopify",
     "variant_inventory_policy": "Deny",
     "variant_fulfillment_service": "Manual",
-    "variant_requires_shipping": "1",
-    "variant_taxable": "1",
-    "gift_card": "0",
+    "variant_requires_shipping": "TRUE",
+    "variant_taxable": "TRUE",
+    "gift_card": "FALSE",
     "variant_weight_unit": "Kg",
-    "included_india": "1",
+    "included_india": "TRUE",
     "status": "draft",
 }
 
@@ -960,9 +960,12 @@ def transform_shopify(data: bytes) -> tuple[bytes, list[str], list[list]]:
         comp2        = pt(col_comp2, "COMPOSITION2")
         comp3        = pt(col_comp3, "COMPOSITION3")
 
+        # Title = SECTION DEPARTMENT FIT COLOR; Handle and Style Code both use
+        # the Fynd Item Code format ({FirstLetterOfSection}-DEPT-STYLE-FABRIC-COLOR).
         title = build_name(section, department, fit, color)
-        style_code = title
-        handle = shopify_handle(style_no, fabric_no, color)
+        item_code = build_item_code(section, department, style_no, fabric_no, color)
+        style_code = item_code
+        handle = item_code
         fabric_composition = build_fabric_composition(comp1, comp2, comp3)
 
         for i, (row_excel, row) in enumerate(group):
@@ -1056,7 +1059,7 @@ def transform_shopify(data: bytes) -> tuple[bytes, list[str], list[list]]:
 # no session storage / database is required.
 # ---------------------------------------------------------------------------
 
-HANDLER_VERSION = "cw-transformer-v6"
+HANDLER_VERSION = "cw-transformer-v9"
 
 _STATE_COOKIE = "cw_oauth_state"
 _STATE_MAX_AGE = 600  # seconds the signed install state stays valid
@@ -1113,9 +1116,11 @@ def _fp_install(request):
         return jsonify({"detail": "Missing company_id"}), 400
     cluster = (request.args.get("cluster") or cfg["cluster"]).rstrip("/")
 
-    state = base64.urlsafe_b64encode(os.urandom(16)).decode().rstrip("=")
-    signed = _sign_state(
-        {"s": state, "c": company_id, "cl": cluster, "ts": int(time.time())},
+    # Sign the install context into the OAuth `state` itself. Because the token is
+    # HMAC-signed with a short TTL it is tamper-proof in the URL, so the handshake
+    # does not depend on a cookie surviving the cross-site (iframe) round-trip.
+    signed_state = _sign_state(
+        {"c": company_id, "cl": cluster, "ts": int(time.time())},
         cfg["api_secret"],
     )
 
@@ -1125,14 +1130,16 @@ def _fp_install(request):
             "client_id": cfg["api_key"],
             "scope": cfg["scope"],
             "redirect_uri": f"{cfg['base_url']}/fp/auth",
-            "state": state,
+            "state": signed_state,
             "response_type": "code",
             "access_mode": "online",
         })
     )
     resp = make_response(redirect(authorize_url, code=302))
-    resp.set_cookie(_STATE_COOKIE, signed, max_age=_STATE_MAX_AGE,
-                    httponly=True, secure=True, samesite="Lax")
+    # Defense-in-depth cookie (SameSite=None to survive a third-party iframe); the
+    # callback does not require it -- it verifies the signed state param instead.
+    resp.set_cookie(_STATE_COOKIE, signed_state, max_age=_STATE_MAX_AGE,
+                    httponly=True, secure=True, samesite="None")
     return resp
 
 
@@ -1142,12 +1149,15 @@ def _fp_auth(request):
     code = request.args.get("code", "")
     returned_state = request.args.get("state", "")
     cookie = request.cookies.get(_STATE_COOKIE, "")
-    payload = _verify_state(cookie, cfg["api_secret"]) if cookie else None
+
+    # Verify the signed state from the URL first (cookie-independent); fall back to
+    # the cookie only if the platform stripped the state param.
+    payload = _verify_state(returned_state, cfg["api_secret"]) if returned_state else None
+    if payload is None and cookie:
+        payload = _verify_state(cookie, cfg["api_secret"])
 
     if not payload or not code:
         return jsonify({"detail": "OAuth state validation failed."}), 400
-    if returned_state and payload.get("s") != returned_state:
-        return jsonify({"detail": "OAuth state mismatch."}), 400
 
     company_id = request.args.get("company_id", "") or payload.get("c", "")
     cluster = (payload.get("cl") or cfg["cluster"]).rstrip("/")
@@ -1192,25 +1202,47 @@ INDEX_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Cottonworld – Logic ERP Catalog Transformer</title>
+  <title>Cottonworld Catalog Converter</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f7fa; color: #1a1a2e; min-height: 100vh; padding: 24px 16px; }
-    .container { max-width: 900px; margin: 0 auto; }
-    h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
-    .subtitle { font-size: 13px; color: #6b7280; margin-bottom: 20px; line-height: 1.5; }
-    .disclaimer { background: #fffbeb; border: 1px solid #f59e0b; border-radius: 8px; padding: 12px 16px; font-size: 13px; color: #92400e; margin-bottom: 20px; line-height: 1.5; }
-    .disclaimer strong { font-weight: 600; }
-    .toggle-row { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f7fa; color: #1a1a2e; min-height: 100vh; }
+    .layout { display: flex; min-height: 100vh; }
+    .sidebar { width: 220px; flex-shrink: 0; background: #fff; border-right: 1px solid #e5e7eb; padding: 24px 14px; }
+    .sidebar .brand { font-size: 13px; font-weight: 700; color: #111827; margin-bottom: 18px; padding: 0 8px; }
+    .nav-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 9px 10px; border-radius: 8px; font-size: 14px; font-weight: 500; color: #374151; background: none; border: none; cursor: pointer; margin-bottom: 4px; }
+    .nav-item:hover { background: #f3f4f6; }
+    .nav-item.active { background: #eff6ff; color: #1d4ed8; font-weight: 600; }
+    .main { flex: 1; padding: 32px 28px 48px; }
+    .container { max-width: 820px; margin: 0 auto; }
+    h1 { font-size: 26px; font-weight: 700; margin-bottom: 8px; }
+    h2 { font-size: 18px; font-weight: 700; margin: 22px 0 8px; }
+    h3.sub { font-size: 18px; font-weight: 700; margin: 0 0 6px; }
+    p.intro { font-size: 14px; color: #374151; margin-bottom: 18px; line-height: 1.55; }
+    .caption { font-size: 12px; color: #6b7280; line-height: 1.5; margin: 6px 0; }
+    .md { font-size: 14px; color: #374151; line-height: 1.6; }
+    .md ul, .md ol { padding-left: 22px; margin: 6px 0 12px; }
+    .md li { margin-bottom: 5px; }
+    .md code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; font-size: 12px; font-family: ui-monospace, monospace; }
+    .md table { border-collapse: collapse; width: 100%; margin: 10px 0 16px; font-size: 12.5px; }
+    .md table th, .md table td { border: 1px solid #e5e7eb; padding: 6px 9px; text-align: left; vertical-align: top; }
+    .md table th { background: #f9fafb; font-weight: 600; }
+    .md a { color: #2563eb; }
+    .divider { height: 1px; background: #e5e7eb; border: none; margin: 22px 0; }
+    .alert { border-radius: 8px; padding: 12px 16px; font-size: 13px; margin: 14px 0; line-height: 1.5; }
+    .alert.warn { background: #fffbeb; border: 1px solid #f59e0b; color: #92400e; }
+    .alert.info { background: #eff6ff; border: 1px solid #93c5fd; color: #1e40af; }
+    .alert.ok   { background: #ecfdf5; border: 1px solid #10b981; color: #065f46; }
+    .alert strong { font-weight: 600; }
+    .toggle-row { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
     .toggle-label { font-size: 13px; font-weight: 600; color: #374151; }
     .seg { display: inline-flex; border: 1px solid #d1d5db; border-radius: 8px; overflow: hidden; }
     .seg button { padding: 8px 18px; font-size: 13px; font-weight: 600; background: #fff; border: none; cursor: pointer; color: #374151; }
     .seg button.active { background: #2563eb; color: #fff; }
-    .drop-zone { border: 2px dashed #d1d5db; border-radius: 10px; background: #fff; padding: 36px 24px; text-align: center; cursor: pointer; transition: border-color .2s, background .2s; margin-bottom: 16px; }
+    .drop-zone { border: 2px dashed #d1d5db; border-radius: 10px; background: #fff; padding: 32px 24px; text-align: center; cursor: pointer; transition: border-color .2s, background .2s; margin-bottom: 12px; }
     .drop-zone:hover, .drop-zone.drag-over { border-color: #2563eb; background: #eff6ff; }
     .drop-zone.has-file { border-color: #10b981; background: #ecfdf5; }
-    .drop-icon { font-size: 36px; margin-bottom: 8px; }
+    .drop-icon { font-size: 34px; margin-bottom: 6px; }
     .drop-label { font-size: 15px; font-weight: 500; color: #374151; }
     .drop-sub { font-size: 12px; color: #9ca3af; margin-top: 4px; }
     .drop-filename { font-size: 13px; color: #10b981; font-weight: 600; margin-top: 8px; }
@@ -1221,69 +1253,266 @@ INDEX_HTML = """<!DOCTYPE html>
     .btn-primary:hover:not(:disabled) { background: #1d4ed8; }
     .btn-success { background: #10b981; color: #fff; }
     .btn-success:hover { background: #059669; }
-    .action-row { display: flex; gap: 10px; margin-bottom: 20px; }
-    .status { display: none; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; }
+    .btn-ghost { background: #fff; color: #374151; border: 1px solid #d1d5db; }
+    .btn-ghost:hover { background: #f9fafb; }
+    .action-row { display: flex; gap: 10px; margin: 14px 0; flex-wrap: wrap; }
+    .status { display: none; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 8px; font-size: 13px; margin: 14px 0; }
     .status.loading { display: flex; background: #eff6ff; color: #1d4ed8; }
     .status.error { display: flex; background: #fef2f2; color: #991b1b; }
     .spinner { width: 18px; height: 18px; border: 3px solid #bfdbfe; border-top-color: #2563eb; border-radius: 50%; animation: spin .7s linear infinite; flex-shrink: 0; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .warnings { display: none; background: #fff7ed; border: 1px solid #fb923c; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px; color: #7c2d12; }
-    .warnings.visible { display: block; }
-    .warnings h3 { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
-    .warnings ul { padding-left: 18px; }
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 14px 0; }
+    .metric { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 14px; }
+    .metric .label { font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+    .metric .value { font-size: 24px; font-weight: 700; color: #111827; }
+    .warnings ul { padding-left: 18px; margin-top: 6px; }
     .warnings li { margin-bottom: 3px; line-height: 1.4; }
-    .result-bar { display: none; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; background: #ecfdf5; border: 1px solid #10b981; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; }
-    .result-bar.visible { display: flex; }
-    .result-info { font-size: 13px; color: #065f46; font-weight: 500; }
-    .preview-section { display: none; margin-bottom: 24px; }
-    .preview-section.visible { display: block; }
-    .preview-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-    .preview-header h3 { font-size: 14px; font-weight: 700; color: #374151; }
-    .preview-header span { font-size: 12px; color: #6b7280; }
-    .table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid #e5e7eb; background: #fff; max-height: 420px; overflow-y: auto; }
-    table { border-collapse: collapse; min-width: 100%; font-size: 12px; }
-    th { background: #f9fafb; padding: 8px 12px; text-align: left; font-weight: 600; color: #374151; white-space: nowrap; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; z-index: 1; }
-    td { padding: 7px 12px; border-bottom: 1px solid #f3f4f6; white-space: nowrap; max-width: 200px; overflow: hidden; text-overflow: ellipsis; color: #4b5563; }
-    tr:last-child td { border-bottom: none; }
-    tr:hover td { background: #f9fafb; }
+    .table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid #e5e7eb; background: #fff; max-height: 440px; overflow-y: auto; }
+    table.data { border-collapse: collapse; min-width: 100%; font-size: 12px; }
+    table.data th { background: #f9fafb; padding: 8px 12px; text-align: left; font-weight: 600; color: #374151; white-space: nowrap; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; z-index: 1; }
+    table.data td { padding: 7px 12px; border-bottom: 1px solid #f3f4f6; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; color: #4b5563; }
+    table.data tr:last-child td { border-bottom: none; }
+    table.data tr:hover td { background: #f9fafb; }
+    details { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 4px 14px; margin: 10px 0; }
+    details summary { cursor: pointer; font-size: 13px; font-weight: 600; color: #374151; padding: 8px 0; }
+    .hidden { display: none !important; }
+    @media (max-width: 720px) {
+      .layout { flex-direction: column; }
+      .sidebar { width: 100%; border-right: none; border-bottom: 1px solid #e5e7eb; display: flex; gap: 8px; padding: 12px; }
+      .sidebar .brand { display: none; }
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+    }
   </style>
 </head>
 <body>
-<div class="container">
-  <h1>Cottonworld – Logic ERP Catalog Transformer</h1>
-  <p class="subtitle">Upload the Logic ERP Item Master export and download a ready-to-import catalog file. Choose the target platform below.</p>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="brand">👕 Cottonworld</div>
+    <button class="nav-item active" data-page="converter">📄 Converter</button>
+    <button class="nav-item" data-page="howto">📖 How to use</button>
+  </nav>
+  <div class="main">
 
-  <div class="disclaimer">⚠️ <strong>Always review the generated file before uploading.</strong> This tool automates the mapping but does not guarantee correctness for every row — open the output and spot-check names, prices, and any flagged warnings before bulk upload.</div>
+    <!-- ===================== CONVERTER PAGE ===================== -->
+    <div class="container" id="page-converter">
+      <h1>Cottonworld Catalog Converter</h1>
+      <p class="intro">Upload the <strong>Logic ERP Item Master</strong> <code>.xlsx</code> file to generate a marketplace-ready upload file.</p>
 
-  <div class="toggle-row">
-    <span class="toggle-label">Target platform</span>
-    <div class="seg" id="seg">
-      <button data-target="fynd" class="active">Fynd</button>
-      <button data-target="shopify">Shopify</button>
+      <div class="toggle-row">
+        <span class="toggle-label">Target platform</span>
+        <div class="seg" id="seg">
+          <button data-target="fynd" class="active">Fynd</button>
+          <button data-target="shopify">Shopify</button>
+        </div>
+      </div>
+      <p class="caption" id="targetCaption"></p>
+
+      <div class="alert warn" id="targetWarn"></div>
+
+      <hr class="divider" />
+
+      <p class="caption">📎 Maximum file size: <strong>10 MB</strong></p>
+      <div class="drop-zone" id="dropZone">
+        <div class="drop-icon">📂</div>
+        <div class="drop-label">Drag &amp; drop Logic ERP Item Master (.xlsx)</div>
+        <div class="drop-sub">or click to browse · max 10 MB</div>
+        <div class="drop-filename" id="dropFilename"></div>
+      </div>
+      <input type="file" id="fileInput" accept=".xlsx" />
+
+      <div class="alert info hidden" id="uploadInfo"></div>
+
+      <div class="action-row">
+        <button class="btn btn-primary" id="convertBtn" disabled>Convert to Fynd Template</button>
+      </div>
+
+      <div class="status" id="status"><div class="spinner"></div><span id="statusText">Transforming data…</span></div>
+
+      <!-- ===== Results ===== -->
+      <div id="results" class="hidden">
+        <div class="alert ok">✅ Conversion complete!</div>
+
+        <div class="metrics">
+          <div class="metric"><div class="label">Total rows (SKUs)</div><div class="value" id="mTotal">0</div></div>
+          <div class="metric"><div class="label">Unique products</div><div class="value" id="mProducts">0</div></div>
+          <div class="metric"><div class="label">Warnings</div><div class="value" id="mWarnings">0</div></div>
+          <div class="metric"><div class="label">Cleanups logged</div><div class="value" id="mCleanups">0</div></div>
+        </div>
+
+        <hr class="divider" />
+        <h3 class="sub">Preview</h3>
+        <p class="caption" id="previewCaption"></p>
+        <div class="toggle-row">
+          <div class="seg" id="viewSeg">
+            <button data-view="key" class="active">Key columns only</button>
+            <button data-view="all">All columns</button>
+          </div>
+        </div>
+        <div class="table-wrap"><table class="data" id="previewTable"></table></div>
+        <p class="caption" id="previewNote"></p>
+
+        <hr class="divider" />
+        <div class="action-row">
+          <button class="btn btn-primary" id="downloadBtn">Download Output File</button>
+        </div>
+        <div class="alert info" id="beforeUpload"></div>
+
+        <!-- Warnings -->
+        <div id="warningsBlock" class="hidden">
+          <hr class="divider" />
+          <div class="alert warn" id="warningsSummary"></div>
+          <details open class="warnings">
+            <summary>View warnings</summary>
+            <ul id="warningList"></ul>
+          </details>
+        </div>
+
+        <!-- Cleanup log -->
+        <div id="cleanupBlock" class="hidden">
+          <hr class="divider" />
+          <div class="alert info" id="cleanupSummary"></div>
+          <details class="warnings">
+            <summary>View cleanup log</summary>
+            <div class="table-wrap" style="margin-top:8px;"><table class="data" id="cleanupTable"></table></div>
+          </details>
+          <div class="action-row">
+            <button class="btn btn-ghost" id="cleanupDownloadBtn">Download cleanup log (CSV)</button>
+          </div>
+        </div>
+      </div>
+
+      <hr class="divider" />
+      <p class="caption">Cottonworld Catalog Converter v4.0 | Fynd + Shopify | Pass-through mode (Name/Title derived only)</p>
     </div>
-  </div>
 
-  <div class="drop-zone" id="dropZone">
-    <div class="drop-icon">📂</div>
-    <div class="drop-label">Drag &amp; drop Logic ERP Item Master (.xlsx)</div>
-    <div class="drop-sub">or click to browse · max 10 MB</div>
-    <div class="drop-filename" id="dropFilename"></div>
-  </div>
-  <input type="file" id="fileInput" accept=".xlsx" />
+    <!-- ===================== HOW-TO PAGE ===================== -->
+    <div class="container hidden" id="page-howto">
+      <h1>How to use this tool</h1>
+      <p class="caption">A step-by-step guide for the Cottonworld team.</p>
 
-  <div class="action-row">
-    <button class="btn btn-primary" id="convertBtn" disabled>⚙️ Convert to Fynd template</button>
-  </div>
+      <div class="alert warn">⚠️ <strong>Disclaimer:</strong> This tool automates the Logic → Fynd <strong>and</strong> Logic → Shopify mappings, but you must <strong>always verify the output file before uploading</strong>. Open the file in Excel, check product names/titles, HS codes (Fynd), MRP, and any flagged warnings. The tool is an accelerator, not a substitute for a final human review.</div>
 
-  <div class="status" id="status"><div class="spinner"></div><span id="statusText">Transforming file… this may take a few seconds.</span></div>
+      <div class="alert info">🎯 <strong>Pick a target platform first.</strong> On the <strong>Converter</strong> page, use the <strong>Target platform</strong> toggle to choose <strong>Fynd</strong> (multi-sheet <code>.xlsx</code>) or <strong>Shopify</strong> (product-import <code>.csv</code>). The Logic export and review steps below are the same for both — only the output format and the upload destination differ.</div>
 
-  <div class="warnings" id="warnings"><h3>⚠️ Warnings — review these rows before uploading</h3><ul id="warningList"></ul></div>
+      <hr class="divider" />
+      <div class="md">
+        <h2>Step 1 — Export Item Master from Logic ERP</h2>
+        <ol>
+          <li>Log in to <strong>Logic ERP</strong>.</li>
+          <li>Go to <strong>Reports → Item Master → GSL-PO</strong> (or the equivalent PO report your team uses).</li>
+          <li>Set the date range to the period you want to publish on Fynd.</li>
+          <li>Export the report as an <strong><code>.xlsx</code></strong> file.</li>
+          <li>Keep the file as-is — <strong>do not rename columns or delete rows</strong>.</li>
+        </ol>
 
-  <div class="result-bar" id="resultBar"><span class="result-info" id="resultInfo"></span><button class="btn btn-success" id="downloadBtn">⬇ Download output</button></div>
+        <h2>Step 2 — Upload the file here</h2>
+        <ol>
+          <li>Open the <strong>Converter</strong> page (left sidebar).</li>
+          <li>Choose your <strong>Target platform</strong> — <strong>Fynd</strong> or <strong>Shopify</strong>.</li>
+          <li>Click <strong>Browse files</strong> and select the Logic <code>.xlsx</code> you exported.</li>
+          <li>Click <strong>Convert to Fynd Template</strong> / <strong>Convert to Shopify CSV</strong>.</li>
+          <li>Wait a few seconds while the tool processes the file.</li>
+        </ol>
 
-  <div class="preview-section" id="previewSection">
-    <div class="preview-header"><h3>Preview (first 20 rows)</h3><span id="previewNote"></span></div>
-    <div class="table-wrap"><table id="previewTable"></table></div>
+        <h2>Step 3 — Review warnings and the cleanup log</h2>
+        <p>After conversion, the tool surfaces two things to review:</p>
+        <p><strong>Warnings</strong> (only fired when something needs your attention):</p>
+        <ul>
+          <li><strong>No HSN mapping for (Section, Department)</strong> — the tool doesn't have an HS Code for that combination. The HS Code field will be <strong>blank</strong> — fill it in manually before upload, and flag it so we can add the mapping permanently.</li>
+        </ul>
+        <p><strong>Cleanup log</strong> (always shown when any cell was touched):</p>
+        <ul>
+          <li>The tool only ever makes two mutations: (a) trimming leading/trailing whitespace, and (b) stripping the trailing <code>.0</code> Excel adds to integer ID columns (Style No, Fabric No., OEM Barcode, Order No).</li>
+          <li>Every such mutation is logged with the <strong>Logic Excel row number, column name, original value, cleaned value, and reason</strong>.</li>
+          <li>You can download the cleanup log as a CSV for your records.</li>
+        </ul>
+        <p>Both are <strong>advisory</strong> — the file is still generated. Treat them as a checklist of things to spot-check.</p>
+
+        <h2>Step 4 — Download and verify</h2>
+        <ol>
+          <li>Click <strong>Download Fynd Upload File</strong>.</li>
+          <li>Open the file in Excel or Google Sheets.</li>
+          <li>Spot-check at least <strong>5–10 products</strong> across different sections and departments:
+            <ul>
+              <li><strong>Name</strong> reads like <em>MENS TSHIRT REGULAR FIT BLACK</em> (raw, all caps from Logic, <code>(NIL)</code> segments skipped)</li>
+              <li><strong>Item Code</strong> format: <code>M-TSHIRT-17656-21646-BLACK</code> (first letter of Section, then Dept-Style-Fabric-Color verbatim from Logic)</li>
+              <li><strong>HS Code</strong> is 8 digits and matches the expected tariff code</li>
+              <li><strong>Actual Price / Selling Price</strong> = Logic MRP (e.g. <code>499.00</code>, <code>499.50</code> — 2-decimal preserved)</li>
+              <li><strong>Size</strong> is whatever Logic put in <code>PACK / SIZE</code>, verbatim</li>
+              <li><strong>Colour / Material</strong> = Logic <code>COLOR</code> / <code>COMPOSITION1</code>, verbatim</li>
+              <li><strong>Custom Attribute 1</strong> = Logic <code>DEPARTMENT</code>, verbatim</li>
+            </ul>
+          </li>
+          <li>If anything looks off, re-export from Logic and re-run — or fix in Excel directly.</li>
+        </ol>
+
+        <h2>Step 5 — Upload to Fynd Commerce Platform</h2>
+        <ol>
+          <li>Log in to <strong>Fynd Commerce Platform</strong> (Cottonworld company).</li>
+          <li>Go to <strong>Products → Bulk Upload</strong> (or the equivalent path).</li>
+          <li>Choose the <strong>Supplementary Upload</strong> template.</li>
+          <li>Upload the file you downloaded from this tool.</li>
+          <li>Watch the Fynd validation report — if any row fails, the error message will tell you which column is wrong. Fix it in the file and re-upload.</li>
+        </ol>
+
+        <hr class="divider" />
+        <h2>What the tool does automatically</h2>
+        <table>
+          <thead><tr><th>Field</th><th>Rule</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Product Name</strong></td><td><code>SECTION DEPARTMENT FIT COLOR</code> — raw verbatim from Logic, empty / <code>(NIL)</code> segments skipped (e.g. <code>MENS TSHIRT REGULAR FIT BLACK</code>)</td></tr>
+            <tr><td><strong>Item Code</strong></td><td><code>{FirstLetterOfSection}-DEPT-STYLE-FABRIC-COLOR</code> (e.g. <code>M-TSHIRT-17656-21646-BLACK</code>). LADIES → <code>L</code>. One code per product, shared across size variants</td></tr>
+            <tr><td><strong>Brand</strong></td><td><code>cottonworld</code> (fixed)</td></tr>
+            <tr><td><strong>Category</strong></td><td><code>Others level 3</code> (fixed)</td></tr>
+            <tr><td><strong>Tax Rule</strong></td><td><code>Tiered Tax Rule – 5% &amp; 18% (Eff. 22 Sep 2025) (2)</code></td></tr>
+            <tr><td><strong>HS Code</strong></td><td>Looked up from the <strong>Section + Department</strong> HSN table</td></tr>
+            <tr><td><strong>Country of Origin</strong></td><td><code>India</code></td></tr>
+            <tr><td><strong>Dimensions</strong></td><td>1 × 1 × 1 cm, 200 g (placeholder — update in Fynd if needed)</td></tr>
+            <tr><td><strong>Trader / Marketer</strong></td><td>Lekhraj Corp Pvt Ltd (Colaba)</td></tr>
+            <tr><td><strong>Return policy</strong></td><td>30 Days</td></tr>
+            <tr><td><strong>Net Quantity</strong></td><td>1, unit <code>number</code> (fixed)</td></tr>
+            <tr><td><strong>Prices (MRP / RATE)</strong></td><td>Pass-through, 2-decimal preserved (<code>499.00</code>, <code>499.50</code>)</td></tr>
+            <tr><td><strong>Numeric IDs (Style No, Fabric No., Order No, OEM Barcode)</strong></td><td>Pass-through; trailing <code>.0</code> from Excel stripped and logged</td></tr>
+            <tr><td><strong>All other fields</strong> (Size, Colour, Material, Fit, Custom Attrs, Sleeve, Collar, etc.)</td><td><strong>Pass-through verbatim from Logic</strong> — no title casing, no mapping, no blanking of <code>(NIL)</code></td></tr>
+            <tr><td><strong>Cleanup log</strong></td><td>Every whitespace trim / <code>.0</code> strip is logged with row + column + reason, exportable as CSV</td></tr>
+          </tbody>
+        </table>
+
+        <hr class="divider" />
+        <h2>Common issues &amp; fixes</h2>
+        <p><strong>Error: "Could not find 'OEM_BARCODE' header row in input file."</strong></p>
+        <ul><li>You uploaded a file that isn't the Logic Item Master export. Re-export from Logic.</li></ul>
+        <p><strong>Error: "Input file missing required columns"</strong></p>
+        <ul>
+          <li>Logic export is missing one of: <code>OEM_BARCODE</code>, <code>SECTION</code>, <code>DEPARTMENT</code>, <code>STYLE NO</code>, <code>FABRIC NO.</code>, <code>COLOR</code>, <code>PACK / SIZE</code>, <code>MRP</code>.</li>
+          <li>Don't rename or delete columns in Logic before exporting.</li>
+        </ul>
+        <p><strong>HS Code is blank for some rows</strong></p>
+        <ul>
+          <li>That Section + Department combination is missing from the HSN table.</li>
+          <li>Tell the tool owner (or raise a PR on <a href="https://github.com/kedarkulkarni11/cottonworld-fynd-automation" target="_blank" rel="noopener">GitHub</a>) to add it — one line in <code>data/hsn_lookup.csv</code>.</li>
+          <li>As a one-off, fill the HS Code manually in the downloaded file.</li>
+        </ul>
+        <p><strong>A field value looks "ugly" (all caps, weird spacing, <code>(NIL)</code>)</strong></p>
+        <ul><li>That is by design — the tool now passes Logic values through verbatim so what you see on Fynd matches what's in Logic. If a value needs to be cleaned up, fix it at source in Logic (or fix in the output file before upload).</li></ul>
+        <p><strong>Cleanup log has lots of entries</strong></p>
+        <ul><li>The tool only ever trims whitespace or strips Excel's <code>.0</code> artifact on integer ID columns. These are safe, mechanical cleanups — review them if you want, but no action is required.</li></ul>
+
+        <hr class="divider" />
+        <h2>Shopify flow (Logic → Shopify)</h2>
+        <p>Switch the <strong>Target platform</strong> toggle to <strong>Shopify</strong> to produce a Shopify <strong>product-import <code>.csv</code></strong> instead of the Fynd <code>.xlsx</code>. The Logic export (Step 1) and the review habits (Steps 3–4) are identical — only these differ:</p>
+        <ul>
+          <li><strong>Output:</strong> a single <code>.csv</code> (Shopify's native import format), not a multi-sheet workbook. There is <strong>no HS Code lookup</strong> on this path.</li>
+          <li><strong>Grouping:</strong> size variants are grouped into one product via a shared <strong><code>Handle</code></strong>; product-level fields (Title, metafields) are written on the first variant row, variant-level fields (Option values, SKU, Barcode, Price) on every row.</li>
+          <li><strong>What's derived:</strong> <code>Title</code> and the <code>Style Code</code> metafield use the same <code>SECTION DEPARTMENT FIT COLOR</code> concatenation as the Fynd Name. Everything else is pass-through or a fixed Shopify default (<code>Vendor=Cottonworld</code>, <code>Status=draft</code>, option linkage to Shopify size/colour metafields, etc.).</li>
+          <li><strong>Upload:</strong> in Shopify admin go to <strong>Products → Import</strong>, choose the downloaded <code>.csv</code>, and review Shopify's import preview before confirming. Products land as <strong>draft</strong> — publish after a spot-check.</li>
+        </ul>
+      </div>
+
+      <hr class="divider" />
+      <p class="caption">Need help? Contact the Fynd team who owns this tool, or raise an issue on the GitHub repository.</p>
+    </div>
+
   </div>
 </div>
 
@@ -1291,37 +1520,64 @@ INDEX_HTML = """<!DOCTYPE html>
   const TRANSFORMER_URL = '';            // same origin -- POST to /transform
   const MAX_FILE_BYTES = 10 * 1024 * 1024;
   const TARGETS = {
-    fynd:    { btn: '⚙️ Convert to Fynd template', file: 'fynd_catalog_output.xlsx', kind: 'xlsx' },
-    shopify: { btn: '⚙️ Convert to Shopify CSV',   file: 'shopify_import.csv',      kind: 'csv'  },
+    fynd: {
+      name: 'Fynd',
+      btn: 'Convert to Fynd Template',
+      download_label: 'Download Fynd Upload File',
+      out_suffix: '_fynd_upload.xlsx',
+      title_col: 'Name',
+      kind: 'xlsx',
+      caption: 'All sections (Mens, Ladies, Boys, Unisex) and departments are supported. HS Code is resolved from the Section + Department HSN lookup.',
+      key_cols: ['Name','Item Code','Brand','Category','HS Code','Gtin Value','Size','Actual Price','Currency','Colour','Material','Custom Attribute 1','Custom Attribute 2','Custom Attribute 3','Custom Attribute 5','Custom Attribute 7','Custom Attribute 14','Custom Attribute 20'],
+    },
+    shopify: {
+      name: 'Shopify',
+      btn: 'Convert to Shopify CSV',
+      download_label: 'Download Shopify Import CSV',
+      out_suffix: '_shopify_import.csv',
+      title_col: 'Title',
+      kind: 'csv',
+      caption: 'Produces a Shopify product-import CSV. One product per Style + Fabric + Color; sizes become variants.',
+      key_cols: ['Handle','Title','Vendor','Option1 Value','Option2 Value','Variant SKU','Variant Price','Gender (product.metafields.custom.gender)','Product Type (product.metafields.custom.product_type)','Fit Type (product.metafields.custom.fit_type)','Fabric Composition (product.metafields.custom.fabric_composition)','Style Code (product.metafields.custom.style_code)','Status'],
+    },
   };
 
   let target = 'fynd';
   let selectedFile = null;
-  let outputBlob = null;
+  let result = null;       // { rows, header, fileBlob, warnings, cleanup, target, sourceName }
+  let previewView = 'key';
 
-  const seg = document.getElementById('seg');
-  const dropZone = document.getElementById('dropZone');
-  const fileInput = document.getElementById('fileInput');
-  const dropFilename = document.getElementById('dropFilename');
-  const convertBtn = document.getElementById('convertBtn');
-  const statusEl = document.getElementById('status');
-  const statusText = document.getElementById('statusText');
-  const warningsEl = document.getElementById('warnings');
-  const warningList = document.getElementById('warningList');
-  const resultBar = document.getElementById('resultBar');
-  const resultInfo = document.getElementById('resultInfo');
-  const downloadBtn = document.getElementById('downloadBtn');
-  const previewSec = document.getElementById('previewSection');
-  const previewNote = document.getElementById('previewNote');
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
+  // ----- Page navigation -----
+  document.querySelectorAll('.nav-item').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n === b));
+    const page = b.dataset.page;
+    $('page-converter').classList.toggle('hidden', page !== 'converter');
+    $('page-howto').classList.toggle('hidden', page !== 'howto');
+    window.scrollTo(0, 0);
+  }));
+
+  // ----- Target toggle -----
+  const seg = $('seg');
   seg.addEventListener('click', e => {
     const b = e.target.closest('button'); if (!b) return;
     target = b.dataset.target;
     [...seg.children].forEach(c => c.classList.toggle('active', c === b));
-    convertBtn.textContent = TARGETS[target].btn;
+    applyTarget();
     resetResults();
   });
 
+  function applyTarget() {
+    const t = TARGETS[target];
+    $('targetCaption').textContent = t.caption;
+    $('targetWarn').innerHTML = '⚠️ <strong>Always review the generated file before uploading to ' + t.name + '.</strong> This tool automates the mapping but does not guarantee correctness for every row — open the output, spot-check titles, prices, and any flagged warnings below before bulk upload.';
+    $('convertBtn').textContent = t.btn;
+  }
+
+  // ----- File handling -----
+  const dropZone = $('dropZone'), fileInput = $('fileInput');
   dropZone.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
   dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
@@ -1332,99 +1588,189 @@ INDEX_HTML = """<!DOCTYPE html>
     if (!file || !file.name.endsWith('.xlsx')) { alert('Please select a .xlsx file.'); return; }
     if (file.size > MAX_FILE_BYTES) { alert('File is too large (' + (file.size/1048576).toFixed(1) + ' MB). Max 10 MB.'); fileInput.value = ''; return; }
     selectedFile = file;
-    dropFilename.textContent = '📄 ' + file.name;
+    $('dropFilename').textContent = '📄 ' + file.name;
     dropZone.classList.add('has-file');
-    convertBtn.disabled = false;
+    $('uploadInfo').innerHTML = 'Uploaded: <strong>' + esc(file.name) + '</strong> (' + (file.size/1024).toFixed(1) + ' KB)';
+    $('uploadInfo').classList.remove('hidden');
+    $('convertBtn').disabled = false;
     resetResults();
   }
 
   function resetResults() {
-    outputBlob = null;
-    statusEl.className = 'status';
-    warningsEl.className = 'warnings';
-    warningList.innerHTML = '';
-    resultBar.className = 'result-bar';
-    previewSec.className = 'preview-section';
-    document.getElementById('previewTable').innerHTML = '';
+    result = null;
+    $('status').className = 'status';
+    $('results').classList.add('hidden');
   }
 
-  convertBtn.addEventListener('click', async () => {
+  // ----- Convert -----
+  $('convertBtn').addEventListener('click', async () => {
     if (!selectedFile) return;
     resetResults();
-    convertBtn.disabled = true;
-    statusEl.className = 'status loading';
-    statusText.textContent = 'Transforming file… this may take a few seconds.';
+    const reqTarget = target;
+    $('convertBtn').disabled = true;
+    $('status').className = 'status loading';
+    $('statusText').textContent = 'Transforming data…';
 
     const form = new FormData();
     form.append('file', selectedFile);
-    form.append('target', target);
+    form.append('target', reqTarget);
+    form.append('mode', 'json');
 
     try {
       const res = await fetch(TRANSFORMER_URL + '/transform', { method: 'POST', body: form });
-      const warningsHeader = res.headers.get('X-Warnings') || '';
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'HTTP ' + res.status }));
         throw new Error(err.detail || ('HTTP ' + res.status));
       }
-      outputBlob = await res.blob();
-      statusEl.className = 'status';
+      const data = await res.json();
+      const bytes = Uint8Array.from(atob(data.file_b64), c => c.charCodeAt(0));
+      const fileBlob = new Blob([bytes], { type: data.content_type });
 
-      const warningItems = warningsHeader.split('||').map(w => w.trim()).filter(Boolean);
-      if (warningItems.length) {
-        warningList.innerHTML = warningItems.map(w => '<li>' + esc(w) + '</li>').join('');
-        warningsEl.className = 'warnings visible';
-      }
-
+      // Parse the generated file into rows for preview + metrics.
       let rows;
-      if (TARGETS[target].kind === 'csv') {
-        const text = await outputBlob.text();
-        const wb = XLSX.read(text, { type: 'string' });
+      if (TARGETS[reqTarget].kind === 'csv') {
+        const wb = XLSX.read(new TextDecoder().decode(bytes), { type: 'string' });
         rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
       } else {
-        const ab = await outputBlob.arrayBuffer();
-        const wb = XLSX.read(ab, { type: 'array' });
+        const wb = XLSX.read(bytes, { type: 'array' });
         rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
       }
-      const totalRows = rows.length - 1;
-      resultInfo.textContent = '✅ Done — ' + totalRows + ' row' + (totalRows !== 1 ? 's' : '') + ' generated';
-      resultBar.className = 'result-bar visible';
-      buildTable(rows.slice(0, 21));
-      previewNote.textContent = 'Showing ' + Math.min(20, totalRows) + ' of ' + totalRows + ' rows';
-      previewSec.className = 'preview-section visible';
+
+      result = {
+        rows: rows.slice(1),
+        header: rows[0] || [],
+        fileBlob,
+        warnings: data.warnings || [],
+        cleanup: data.cleanup || [],
+        target: reqTarget,
+        sourceName: selectedFile.name,
+      };
+      $('status').className = 'status';
+      renderResults();
     } catch (err) {
-      statusEl.className = 'status error';
-      statusText.textContent = '❌ ' + err.message;
+      $('status').className = 'status error';
+      $('statusText').textContent = '❌ ' + err.message;
     } finally {
-      convertBtn.disabled = false;
+      $('convertBtn').disabled = false;
     }
   });
 
-  downloadBtn.addEventListener('click', () => {
-    if (!outputBlob) return;
-    const url = URL.createObjectURL(outputBlob);
-    const a = Object.assign(document.createElement('a'), { href: url, download: TARGETS[target].file });
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  function renderResults() {
+    const t = TARGETS[result.target];
+    const totalRows = result.rows.length;
+    const titleIdx = result.header.indexOf(t.title_col);
+    let products = 0;
+    if (titleIdx >= 0) result.rows.forEach(r => { if (String(r[titleIdx] ?? '').trim() !== '') products++; });
+
+    $('mTotal').textContent = totalRows;
+    $('mProducts').textContent = products;
+    $('mWarnings').textContent = result.warnings.length;
+    $('mCleanups').textContent = result.cleanup.length;
+
+    $('previewCaption').textContent = 'First 20 rows of the generated file. Toggle below to see only key columns or the full template (' + result.header.length + ' columns).';
+    previewView = 'key';
+    [...$('viewSeg').children].forEach(c => c.classList.toggle('active', c.dataset.view === 'key'));
+    renderPreview();
+    $('previewNote').textContent = 'Showing ' + Math.min(20, totalRows) + ' of ' + totalRows + ' rows. Download the full file below to see everything.';
+
+    $('beforeUpload').innerHTML = '📌 <strong>Before uploading to ' + t.name + ':</strong> open the downloaded file, verify a few product rows (Title/Name, Price, key attributes), and review any warnings listed below.';
+
+    // Warnings
+    if (result.warnings.length) {
+      $('warningsSummary').innerHTML = '<strong>' + result.warnings.length + ' warning(s) during conversion</strong> — the file was generated, but review these before uploading to Fynd:';
+      $('warningList').innerHTML = result.warnings.map(w => '<li>' + esc(w) + '</li>').join('');
+      $('warningsBlock').classList.remove('hidden');
+    } else {
+      $('warningsBlock').classList.add('hidden');
+    }
+
+    // Cleanup log
+    if (result.cleanup.length) {
+      $('cleanupSummary').innerHTML = '<strong>' + result.cleanup.length + ' cell(s) cleaned up during conversion.</strong> These are minor mutations (whitespace trims, Excel <code>.0</code> float artifacts on numeric IDs) — semantic values were not changed. Review the table below or download as CSV for your records.';
+      buildCleanupTable();
+      $('cleanupBlock').classList.remove('hidden');
+    } else {
+      $('cleanupBlock').classList.add('hidden');
+    }
+
+    $('results').classList.remove('hidden');
+  }
+
+  // ----- Preview view toggle -----
+  $('viewSeg').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    previewView = b.dataset.view;
+    [...$('viewSeg').children].forEach(c => c.classList.toggle('active', c === b));
+    renderPreview();
   });
 
-  function buildTable(rows) {
-    const table = document.getElementById('previewTable');
+  function renderPreview() {
+    if (!result) return;
+    const t = TARGETS[result.target];
+    let cols = result.header.map((h, i) => i);
+    if (previewView === 'key') {
+      const keyIdx = t.key_cols.map(c => result.header.indexOf(c)).filter(i => i >= 0);
+      if (keyIdx.length) cols = keyIdx;
+    }
+    const table = $('previewTable');
     table.innerHTML = '';
-    if (!rows.length) return;
     const thead = document.createElement('thead');
     const hrow = document.createElement('tr');
-    rows[0].forEach(c => { const th = document.createElement('th'); th.textContent = c; th.title = c; hrow.appendChild(th); });
+    cols.forEach(i => { const th = document.createElement('th'); const v = result.header[i]; th.textContent = v; th.title = v; hrow.appendChild(th); });
     thead.appendChild(hrow); table.appendChild(thead);
     const tbody = document.createElement('tbody');
-    rows.slice(1).forEach(row => {
+    result.rows.slice(0, 20).forEach(row => {
       const tr = document.createElement('tr');
-      rows[0].forEach((_, i) => { const td = document.createElement('td'); const v = String(row[i] ?? ''); td.textContent = v; td.title = v; tr.appendChild(td); });
+      cols.forEach(i => { const td = document.createElement('td'); const v = String(row[i] ?? ''); td.textContent = v; td.title = v; tr.appendChild(td); });
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
   }
 
-  function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function buildCleanupTable() {
+    const header = ['Excel Row', 'Column', 'Original', 'Cleaned', 'Reason'];
+    const table = $('cleanupTable');
+    table.innerHTML = '';
+    const thead = document.createElement('thead');
+    const hrow = document.createElement('tr');
+    header.forEach(h => { const th = document.createElement('th'); th.textContent = h; hrow.appendChild(th); });
+    thead.appendChild(hrow); table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    result.cleanup.forEach(entry => {
+      const tr = document.createElement('tr');
+      entry.forEach(c => { const td = document.createElement('td'); const v = String(c ?? ''); td.textContent = v; td.title = v; tr.appendChild(td); });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+  }
+
+  // ----- Downloads -----
+  $('downloadBtn').addEventListener('click', () => {
+    if (!result) return;
+    const t = TARGETS[result.target];
+    const name = result.sourceName.replace(/\\.xlsx$/i, '') + t.out_suffix;
+    triggerDownload(result.fileBlob, name);
+  });
+
+  $('cleanupDownloadBtn').addEventListener('click', () => {
+    if (!result || !result.cleanup.length) return;
+    const header = ['Excel Row', 'Column', 'Original', 'Cleaned', 'Reason'];
+    const csv = [header, ...result.cleanup].map(row =>
+      row.map(c => { const v = String(c ?? ''); return /[",\\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(',')
+    ).join('\\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const name = result.sourceName.replace(/\\.xlsx$/i, '') + '_cleanup_log.csv';
+    triggerDownload(blob, name);
+  });
+
+  function triggerDownload(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement('a'), { href: url, download: name });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
+  applyTarget();
 </script>
 </body>
 </html>"""
@@ -1477,6 +1823,26 @@ def _handle_transform(request):
         return jsonify({"detail": str(e)}), 400
     except Exception as e:
         return jsonify({"detail": f"Transform failed: {str(e)}"}), 500
+
+    # JSON envelope mode (used by the bundled UI): returns the file as base64
+    # plus the full warnings list and the cleanup audit log, so the page can
+    # render metrics + the cleanup table + a cleanup CSV. Default stays the raw
+    # file download for any other/legacy caller.
+    mode = (request.form.get("mode") or request.args.get("mode") or "").strip().lower()
+    if mode == "json":
+        payload = {
+            "target": target,
+            "filename": "shopify_import.csv" if target == "shopify" else "fynd_catalog_output.xlsx",
+            "content_type": "text/csv" if target == "shopify" else
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "file_b64": base64.b64encode(body_bytes).decode("ascii"),
+            "warnings": warnings,
+            # Each entry: [excel_row, column, original, cleaned, reason]
+            "cleanup": cleanup_entries,
+        }
+        resp = jsonify(payload)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
 
     warnings_safe = "||".join(warnings).encode("latin-1", errors="replace").decode("latin-1")
 

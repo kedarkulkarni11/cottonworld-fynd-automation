@@ -1,6 +1,6 @@
 {
   "vendor": "Cottonworld",
-  "published": "0",
+  "published": "FALSE",
   "option1_name": "Size",
   "option1_linked_to": "product.metafields.shopify.size",
   "option2_name": "color",
@@ -9,10 +9,10 @@
   "variant_inventory_tracker": "Shopify",
   "variant_inventory_policy": "Deny",
   "variant_fulfillment_service": "Manual",
-  "variant_requires_shipping": "1",
-  "variant_taxable": "1",
-  "gift_card": "0",
+  "variant_requires_shipping": "TRUE",
+  "variant_taxable": "TRUE",
+  "gift_card": "FALSE",
   "variant_weight_unit": "Kg",
-  "included_india": "1",
+  "included_india": "TRUE",
   "status": "draft"
 }

@@ -30,6 +30,7 @@ import pandas as pd
 from transformer import (
     CleanupLog,
     _is_nil,
+    build_item_code,
     build_name,
     find_col,
     find_header_row,
@@ -268,10 +269,12 @@ def transform(input_file) -> tuple[BytesIO, list[str], pd.DataFrame, pd.DataFram
         comp2 = pt(col_comp2, "COMPOSITION2")
         comp3 = pt(col_comp3, "COMPOSITION3")
 
-        # Derived (Title and Style Code share the same concatenation)
+        # Derived. Title = SECTION DEPARTMENT FIT COLOR; Handle and Style Code
+        # both use the Fynd Item Code format ({FirstLetterOfSection}-DEPT-STYLE-FABRIC-COLOR).
         title = build_name(section, department, fit, color)
-        style_code = title
-        handle = shopify_handle(style_no, fabric_no, color)
+        item_code = build_item_code(section, department, style_no, fabric_no, color)
+        style_code = item_code
+        handle = item_code
         fabric_composition = build_fabric_composition(comp1, comp2, comp3)
 
         for i, (_, row) in enumerate(group_df.iterrows()):

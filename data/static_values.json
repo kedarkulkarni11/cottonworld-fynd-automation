@@ -15,6 +15,6 @@
   "return_time_limit": 30,
   "return_time_unit": "Days",
   "net_quantity_value": 1,
-  "net_quantity_unit": "number",
+  "net_quantity_unit": "nos",
   "collection": "CWC"
 }
