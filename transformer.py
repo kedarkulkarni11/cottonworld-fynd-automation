@@ -241,6 +241,17 @@ def build_name(section: str, department: str, fit: str, color: str) -> str:
     return " ".join(parts)
 
 
+def build_fabric_composition(*comps: str) -> str:
+    """Material = space-joined COMPOSITION1/2/3, skipping empty / (NIL)
+    segments (mirrors build_name's segment handling)."""
+    parts: list[str] = []
+    for v in comps:
+        s = (v or "").strip()
+        if s and not _is_nil(s):
+            parts.append(s)
+    return " ".join(parts)
+
+
 def build_item_code(section: str, department: str, style_no: str,
                     fabric_no: str, color: str) -> str:
     """Format: {first-letter-of-SECTION}-DEPARTMENT-STYLE_NO-FABRIC_NO-COLOR
@@ -359,6 +370,8 @@ def transform(input_file) -> tuple[BytesIO, list[str], pd.DataFrame, pd.DataFram
     col_leg = find_col(df, "LEG")
     col_front = find_col(df, "FRONT")
     col_comp1 = find_col(df, "COMPOSITION1")
+    col_comp2 = find_col(df, "COMPOSITION2")
+    col_comp3 = find_col(df, "COMPOSITION3")
     col_packed_date = find_col(df, "PACKED DATE", "PACKED_DATE")
     col_cs = find_col(df, "CS")
     col_rate = find_col(df, "RATE")
@@ -431,6 +444,8 @@ def transform(input_file) -> tuple[BytesIO, list[str], pd.DataFrame, pd.DataFram
         leg = pt(col_leg, "LEG")
         front = pt(col_front, "FRONT")
         composition1 = pt(col_comp1, "COMPOSITION1")
+        composition2 = pt(col_comp2, "COMPOSITION2")
+        composition3 = pt(col_comp3, "COMPOSITION3")
         packed_date = format_packed_date(first.get(col_packed_date)) if col_packed_date else ""
         cs = pt(col_cs, "CS")
         rate = format_price(first.get(col_rate)) if col_rate is not None else ""
@@ -484,7 +499,8 @@ def transform(input_file) -> tuple[BytesIO, list[str], pd.DataFrame, pd.DataFram
                 out["Return Time Unit"] = STATIC["return_time_unit"]
                 # Pass-through fields (no transformation)
                 out["Colour"] = color
-                out["Material"] = composition1
+                out["Material"] = build_fabric_composition(
+                    composition1, composition2, composition3)
                 # Custom attributes — all pass-through
                 out["Custom Attribute 1"] = department
                 out["Custom Attribute 2"] = fit
@@ -510,6 +526,9 @@ def transform(input_file) -> tuple[BytesIO, list[str], pd.DataFrame, pd.DataFram
                 out["Custom Attribute 27"] = front
                 out["Custom Attribute 28"] = fabric_type
                 out["Custom Attribute 29"] = rate
+                out["Custom Attribute 30"] = composition1
+                out["Custom Attribute 31"] = composition2
+                out["Custom Attribute 32"] = composition3
 
             output_rows.append(out)
 

@@ -45,7 +45,7 @@ STATIC = {
     "country_of_origin": "India",
     "gtin_type": "EAN",
     "currency": "INR",
-    "length_cm": 1, "width_cm": 1, "height_cm": 1, "weight_gram": 200,
+    "length_cm": 37, "width_cm": 48, "height_cm": 1.4, "weight_gram": 500,
     "trader_type": "Manufacturer",
     "trader_name": "Lekhraj Corp Pvt Ltd",
     "trader_address": "GALA-F, SIDHWA ESTATE, OLD BMP BUILDING, N.A. SAWANT MARG, Colaba, Mumbai City, Maharashtra, 400005",
@@ -95,7 +95,7 @@ HSN_LOOKUP = {
     ("LADIES", "SOCKS"): "62171010",
     ("LADIES", "SWEAT"): "61091000",
     ("LADIES", "TSHIRT"): "61091000",
-    ("LADIES", "WAIST COAT"): "62113200",
+    ("LADIES", "WAISTCOAT"): "62113200",
     ("MENS", "BOXERS"): "62071100",
     ("MENS", "ETHNI KURTA"): "62113990",
     ("MENS", "ETHNI PANTS"): "62031910",
@@ -667,6 +667,8 @@ def transform(data: bytes) -> tuple[bytes, list[str], list[list]]:
     col_leg       = find_col(headers, "LEG")
     col_front     = find_col(headers, "FRONT")
     col_comp1     = find_col(headers, "COMPOSITION1")
+    col_comp2     = find_col(headers, "COMPOSITION2")
+    col_comp3     = find_col(headers, "COMPOSITION3")
     col_packed_date = find_col(headers, "PACKED DATE", "PACKED_DATE")
     col_cs        = find_col(headers, "CS")
     col_rate      = find_col(headers, "RATE")
@@ -744,6 +746,8 @@ def transform(data: bytes) -> tuple[bytes, list[str], list[list]]:
         leg             = pt(col_leg, "LEG")
         front           = pt(col_front, "FRONT")
         composition1    = pt(col_comp1, "COMPOSITION1")
+        composition2    = pt(col_comp2, "COMPOSITION2")
+        composition3    = pt(col_comp3, "COMPOSITION3")
         packed_date     = format_packed_date(get(first, col_packed_date)) if col_packed_date is not None else ""
         cs              = pt(col_cs, "CS")
         rate            = format_price(get(first, col_rate)) if col_rate is not None else ""
@@ -790,7 +794,8 @@ def transform(data: bytes) -> tuple[bytes, list[str], list[list]]:
                 out["Return Time Limit"] = STATIC["return_time_limit"]
                 out["Return Time Unit"]  = STATIC["return_time_unit"]
                 out["Colour"]            = color
-                out["Material"]          = composition1
+                out["Material"]          = build_fabric_composition(
+                    composition1, composition2, composition3)
                 out["Custom Attribute 1"]  = department
                 out["Custom Attribute 2"]  = fit
                 out["Custom Attribute 3"]  = section
@@ -814,6 +819,9 @@ def transform(data: bytes) -> tuple[bytes, list[str], list[list]]:
                 out["Custom Attribute 27"] = front
                 out["Custom Attribute 28"] = fabric_type
                 out["Custom Attribute 29"] = rate
+                out["Custom Attribute 30"] = composition1
+                out["Custom Attribute 31"] = composition2
+                out["Custom Attribute 32"] = composition3
 
             output_rows.append([out.get(col, "") for col in FYND_COLUMNS])
 
@@ -1059,7 +1067,7 @@ def transform_shopify(data: bytes) -> tuple[bytes, list[str], list[list]]:
 # no session storage / database is required.
 # ---------------------------------------------------------------------------
 
-HANDLER_VERSION = "cw-transformer-v9"
+HANDLER_VERSION = "cw-transformer-v10"
 
 _STATE_COOKIE = "cw_oauth_state"
 _STATE_MAX_AGE = 600  # seconds the signed install state stays valid

@@ -104,7 +104,7 @@ Coverage today:
 | Fynd column | Logic source | Treatment |
 |---|---|---|
 | Colour | `COLOR` | **Pass-through verbatim** (no title-casing) |
-| Material | `COMPOSITION1` | **Pass-through verbatim** (no fabric-blend collapsing, no percentage stripping) |
+| Material | `COMPOSITION1` + `COMPOSITION2` + `COMPOSITION3` | **Space-joined concatenation**, skipping empty / `(NIL)` segments (no percentage stripping) |
 
 ---
 
@@ -136,8 +136,11 @@ Coverage today:
 | CA 27 — Front | `FRONT` | Pass-through verbatim |
 | CA 28 — Fabric Type | `FABRIC TYPE` | Pass-through verbatim |
 | CA 29 — Rate | `RATE` | 2-decimal preserved |
+| CA 30 — Composition 1 | `COMPOSITION1` | Pass-through verbatim |
+| CA 31 — Composition 2 | `COMPOSITION2` | Pass-through verbatim |
+| CA 32 — Composition 3 | `COMPOSITION3` | Pass-through verbatim |
 
-CAs 15–19, 30–50 are intentionally left blank.
+CAs 15–19, 33–50 are intentionally left blank.
 
 ---
 
